@@ -817,8 +817,11 @@ class _PageParser(HTMLParser):
         self.in_title = False
         self.media_links = []
         self.text_parts = []
+        self.ignored_tags = []
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag in ("script", "style", "noscript", "svg"):
+            self.ignored_tags.append(tag)
         if tag == "a" and a.get("href"):
             self.links.append(a["href"])
         if tag == "meta":
@@ -834,7 +837,11 @@ class _PageParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "title":
             self.in_title = False
+        if self.ignored_tags and tag == self.ignored_tags[-1]:
+            self.ignored_tags.pop()
     def handle_data(self, data):
+        if self.ignored_tags:
+            return
         if clean(data):
             self.text_parts.append(clean(data))
         if self.in_title:
@@ -857,9 +864,10 @@ def _extract_older_song(detail_html, source_url):
     parser.feed(detail_html)
     meta = parser.meta
     page_text = clean(" ".join(parser.text_parts))
+    source_description = clean(meta.get("description") or meta.get("og:description"))
     description_match = re.search(
         r"Download\s+(.+?)\s+MP3\s+song\s+by\s+(.+?)\s+on\s+DJJOhAL",
-        page_text, re.I,
+        source_description or page_text, re.I,
     )
     if description_match:
         title = clean(description_match.group(1))
