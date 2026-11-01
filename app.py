@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import feedparser
 import httpx
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 
 APP_NAME = "Preet Music Portal API"
 DB_PATH = os.getenv("DB_PATH", "/tmp/preet_music_portal.sqlite3")
@@ -443,15 +443,27 @@ def wp_sync(song):
         return result.get("id"), result.get("link")
 
 
-@app.get("/")
+def frontend_html():
+    frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    try:
+        with open(frontend_path, "r", encoding="utf-8") as frontend_file:
+            return frontend_file.read()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"JattBeat frontend file is missing or unreadable: {frontend_path} ({exc})",
+        )
+
+
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+    return HTMLResponse(content=frontend_html())
 
 
-@app.get("/song/{song_path}")
+@app.get("/song/{song_path}", response_class=HTMLResponse)
 def song_page(song_path: str):
     # The frontend resolves the song from the live catalogue API.
-    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+    return HTMLResponse(content=frontend_html())
 
 
 @app.get("/health")
@@ -466,6 +478,11 @@ def health():
 @app.get("/api/songs")
 def list_songs(limit: int = 50):
     limit = max(1, min(limit, 100))
+    with closing(db()) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
+    if count == 0:
+        seed_known_catalog_if_empty()
+
     with closing(db()) as conn:
         rows = conn.execute(
             """SELECT id,title,artist,album,label,release_date,duration,
