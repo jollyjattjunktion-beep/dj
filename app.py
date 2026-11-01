@@ -32,6 +32,11 @@ SOURCE_ALLOWED_HOSTS = {
     for h in os.getenv("SOURCE_ALLOWED_HOSTS", "").split(",")
     if h.strip()
 }
+ARTWORK_ALLOWED_HOSTS = {
+    h.strip().lower()
+    for h in os.getenv("ARTWORK_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+}
 USER_AGENT = os.getenv(
     "FEED_USER_AGENT", "PreetMusicPortal/0.1 (+contact site administrator)"
 )
@@ -70,9 +75,23 @@ def init_db():
         conn.commit()
 
 
+def backfill_known_credits():
+    with closing(db()) as conn:
+        rows = conn.execute("SELECT id, title, artist FROM songs").fetchall()
+        for row in rows:
+            clean_title, parsed_artist = parse_title_and_artist(row["title"], row["artist"])
+            if parsed_artist:
+                conn.execute(
+                    "UPDATE songs SET title=?, artist=? WHERE id=?",
+                    (clean_title, parsed_artist, row["id"]),
+                )
+        conn.commit()
+
+
 @app.on_event("startup")
 def startup():
     init_db()
+    backfill_known_credits()
 
 
 def clean(value):
@@ -105,22 +124,70 @@ def field(entry, *names):
     return ""
 
 
+# Explicit credits for the nine catalogue entries already imported.
+# Keep this list factual and review credits before adding new overrides.
+KNOWN_CREDITS = {
+    "karwa chauth": ("Karwa Chauth", "Jesann"),
+    "on me": ("On Me", "Manni Virdi"),
+    "for my bae": ("For My Bae", "Ajay Amiwalia"),
+    "hoshiarpur anthem": ("Hoshiarpur Anthem", "Ranjha Chagran Wala"),
+    "six sunday": ("Six Sunday", "Yuvraj Goraya, Shetu Katal"),
+    "kabool ae": ("Kabool Ae", "Deep Sukh"),
+    "das jandi": ("Das Jandi", "Sembhy K"),
+    "low cars": ("Low Cars", "Karman"),
+    "who jatt": ("Who Jatt", "Gur Sohal"),
+}
+
+
+def parse_title_and_artist(raw_title, supplied_artist=""):
+    title = clean(raw_title)
+    title = re.sub(r"\\s+MP3\\s+Song\\s+Download\\s*$", "", title, flags=re.I).strip()
+    supplied_artist = clean(supplied_artist)
+
+    # Prefer a real artist credit supplied by the feed, not the feed/site name.
+    generic_sources = {"djjohal.com", "djjohal", "rss.app", "preet music"}
+    if supplied_artist.casefold() not in generic_sources and supplied_artist:
+        return title, supplied_artist
+
+    known = KNOWN_CREDITS.get(title.casefold())
+    if known:
+        return known
+
+    # Parse only an explicit, unambiguous "Song Title - Artist" / "Song Title | Artist".
+    for separator in (" - ", " | "):
+        if separator in title:
+            left, right = title.rsplit(separator, 1)
+            if left.strip() and right.strip():
+                return left.strip(), right.strip()
+
+    # Do not guess artist names from arbitrary trailing words.
+    return title, ""
+
+
+def explicitly_authorized(entry, field_name):
+    value = entry.get(field_name, False)
+    return value is True or str(value).strip().lower() in {"1", "true", "yes", "authorized", "authorised"}
+
+
 def normalize_entry(entry):
-    title = clean(field(entry, "title", "name"))
-    artist = clean(field(entry, "artist", "author", "creator", "dc_creator"))
+    raw_title = clean(field(entry, "title", "name"))
+    supplied_artist = clean(field(entry, "artist", "author", "creator", "dc_creator"))
+    title, artist = parse_title_and_artist(raw_title, supplied_artist)
     source = safe_url(
         field(entry, "source_url", "link", "url"),
         SOURCE_ALLOWED_HOSTS,
         required=True,
     )
+    # Media URLs are accepted only when the feed explicitly marks the relevant
+    # permission as verified and the host is allow-listed by the site operator.
     audio = safe_url(
         field(entry, "audio_url", "stream_url", "enclosure_url"),
         AUDIO_ALLOWED_HOSTS,
-    )
+    ) if explicitly_authorized(entry, "audio_authorized") else ""
     artwork = safe_url(
         field(entry, "artwork_url", "image", "cover", "image_url"),
-        SOURCE_ALLOWED_HOSTS,
-    )
+        ARTWORK_ALLOWED_HOSTS,
+    ) if explicitly_authorized(entry, "artwork_authorized") else ""
     if not title:
         raise ValueError("Feed item has no title")
 
@@ -329,6 +396,20 @@ def import_feed(x_import_token: str = Header(default="")):
                         (song["fingerprint"],),
                     ).fetchone()
                     if existing:
+                        # Refresh metadata for existing feed items so corrected
+                        # artist credits and newly authorized links can be applied.
+                        conn.execute(
+                            """UPDATE songs SET title=?, artist=?, album=?, label=?,
+                               release_date=?, duration=?, source_url=?,
+                               audio_url=?, artwork_url=? WHERE fingerprint=?""",
+                            (
+                                song["title"], song["artist"], song["album"],
+                                song["label"], song["release_date"], song["duration"],
+                                song["source_url"], song["audio_url"],
+                                song["artwork_url"], song["fingerprint"],
+                            ),
+                        )
+                        conn.commit()
                         skipped += 1
                         continue
 
