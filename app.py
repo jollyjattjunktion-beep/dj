@@ -102,10 +102,58 @@ def backfill_known_credits():
         conn.commit()
 
 
+def seed_known_catalog_if_empty():
+    source_slugs = {
+        "karwa chauth": "karwa-chauth-jesann",
+        "on me": "on-me-manni-virdi",
+        "for my bae": "for-my-bae-ajay-amiwalia",
+        "hoshiarpur anthem": "hoshiarpur-anthem-ranjha-chagran-wala",
+        "six sunday": "six-sunday-yuvraj-goraya-and-shetu-katal",
+        "kabool ae": "kabool-ae-deep-sukh",
+        "das jandi": "das-jandi-sembhy-k",
+        "low cars": "low-cars-karman",
+        "who jatt": "who-jatt-gur-sohal",
+    }
+    release_dates = {
+        "karwa chauth": "2026-10-24",
+        "on me": "2026-10-24",
+        "for my bae": "2026-10-24",
+        "hoshiarpur anthem": "2026-10-24",
+        "six sunday": "2026-10-25",
+        "kabool ae": "2026-10-25",
+        "das jandi": "2026-10-25",
+        "low cars": "2026-10-25",
+        "who jatt": "2026-10-25",
+    }
+    with closing(db()) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
+        if count:
+            return
+        for key, (title, artist) in KNOWN_CREDITS.items():
+            media = KNOWN_MEDIA.get(key, {})
+            source_url = "https://www.djjohal.com/single/" + source_slugs[key] + ".html"
+            stable = source_url
+            fingerprint = hashlib.sha256(stable.encode("utf-8")).hexdigest()
+            conn.execute(
+                """INSERT OR IGNORE INTO songs
+                   (fingerprint,external_id,title,artist,album,label,release_date,
+                    duration,description,source_url,audio_url,artwork_url,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    fingerprint, source_url, title, artist, "", media.get("label", ""),
+                    release_dates[key], media.get("duration", ""), "",
+                    source_url, media.get("audio_url", ""), media.get("artwork_url", ""),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        conn.commit()
+
+
 @app.on_event("startup")
 def startup():
     init_db()
     backfill_known_credits()
+    seed_known_catalog_if_empty()
 
 
 def clean(value):
