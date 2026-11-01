@@ -840,7 +840,8 @@ class _PageParser(HTMLParser):
 def _extract_listing_links(html, page_url):
     parser = _PageParser()
     parser.feed(html)
-    found = []    for href in parser.links:
+    found = []
+    for href in parser.links:
         absolute = urljoin(page_url, href)
         parsed = urlparse(absolute)
         if parsed.scheme == "https" and parsed.hostname in {"www.djjohal.com", "djjohal.com"} and re.search(r"/single/[^/?#]+\.html$", parsed.path, re.I):
