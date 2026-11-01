@@ -54,3 +54,19 @@ Only add streaming/download URLs and artwork that you own, are licensed to use, 
 ## Backups
 
 Back up both `/var/data/jattbeat.sqlite` and any future uploaded media before upgrades. Do not remove or replace the persistent disk during redeployments.
+
+## Bulk importer integration with the existing Python API
+
+The Admin → Bulk Importer tab is a secure server-side bridge to the existing importer in the repository root `app.py`. It calls the existing `POST /admin/import-pages` endpoint; it does not duplicate the scraping/parsing implementation in PHP.
+
+On the **PHP admin Render service**, add:
+- `IMPORT_API_URL=https://dj-laqb.onrender.com`
+- `IMPORT_TOKEN=<the exact same IMPORT_TOKEN configured on the Python API Render service>`
+
+Keep the token private. Do not put it in browser JavaScript or GitHub files. The PHP service sends it server-to-server.
+
+On the **Python API Render service**, confirm the existing `IMPORT_TOKEN` is set. WordPress auto-sync from imported records only happens if `WP_BASE_URL`, `WP_USERNAME`, and `WP_APP_PASSWORD` are configured there. Keep `WP_POST_STATUS=draft` while reviewing imports.
+
+In Admin → Bulk Importer, paste one or more approved Single Track category listing URLs (one per line; maximum 20 per batch) and click **Import all pages**. The existing Python importer performs deduplication and reports new records, duplicates and errors.
+
+Important architecture note: this import job writes to the existing Python API's SQLite catalogue and, when configured, syncs to the WordPress Song catalogue. It does not automatically copy records into the separate PHP admin service's own SQLite database. WordPress remains the current public catalogue of record. A future catalogue bridge is needed if the PHP Songs tab itself must become the single source of truth.
