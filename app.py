@@ -463,14 +463,25 @@ def import_feed(x_import_token: str = Header(default="")):
                         # Refresh metadata for existing feed items so corrected
                         # artist credits and newly authorized links can be applied.
                         conn.execute(
-                            """UPDATE songs SET title=?, artist=?, album=?, label=?,
-                               release_date=?, duration=?, source_url=?,
-                               audio_url=?, artwork_url=? WHERE fingerprint=?""",
+                            """UPDATE songs SET title=?, artist=?,
+                               album=CASE WHEN ? != '' THEN ? ELSE album END,
+                               label=CASE WHEN ? != '' THEN ? ELSE label END,
+                               release_date=CASE WHEN ? != '' THEN ? ELSE release_date END,
+                               duration=CASE WHEN ? != '' THEN ? ELSE duration END,
+                               source_url=?,
+                               audio_url=CASE WHEN ? != '' THEN ? ELSE audio_url END,
+                               artwork_url=CASE WHEN ? != '' THEN ? ELSE artwork_url END
+                               WHERE fingerprint=?""",
                             (
-                                song["title"], song["artist"], song["album"],
-                                song["label"], song["release_date"], song["duration"],
-                                song["source_url"], song["audio_url"],
-                                song["artwork_url"], song["fingerprint"],
+                                song["title"], song["artist"],
+                                song["album"], song["album"],
+                                song["label"], song["label"],
+                                song["release_date"], song["release_date"],
+                                song["duration"], song["duration"],
+                                song["source_url"],
+                                song["audio_url"], song["audio_url"],
+                                song["artwork_url"], song["artwork_url"],
+                                song["fingerprint"],
                             ),
                         )
                         conn.commit()
