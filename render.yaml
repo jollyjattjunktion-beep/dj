@@ -13,9 +13,19 @@ services:
         value: /var/data/catalog.sqlite3
       - key: FEED_FORMAT
         value: auto
+      - key: PUBLIC_API_BASE_URL
+        value: https://dj-laqb.onrender.com
+      - key: WP_BASE_URL
+        sync: false
+      - key: WP_USERNAME
+        sync: false
+      - key: WP_APP_PASSWORD
+        sync: false
       - key: WP_POST_STATUS
         value: draft
       - key: IMPORT_TOKEN
+        generateValue: true
+      - key: MEDIA_TOKEN_SECRET
         generateValue: true
     disk:
       name: music-catalog-data
