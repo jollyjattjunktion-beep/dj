@@ -33,6 +33,7 @@ WP_BASE_URL = os.getenv("WP_BASE_URL", "").rstrip("/")
 WP_USERNAME = os.getenv("WP_USERNAME", "")
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
 WP_POST_STATUS = os.getenv("WP_POST_STATUS", "draft").lower()
+PUBLIC_API_BASE_URL = os.getenv("PUBLIC_API_BASE_URL", "https://dj-laqb.onrender.com").strip().rstrip("/")
 AUDIO_ALLOWED_HOSTS = {
     h.strip().lower()
     for h in os.getenv("AUDIO_ALLOWED_HOSTS", "").split(",")
@@ -395,63 +396,42 @@ def slugify(value):
     return re.sub(r"-+", "-", value).strip("-")[:160] or "song"
 
 
-def wp_sync(song):
+def wp_sync(song, render_song_id):
+    """Upsert one Render row into the WordPress-owned Songs catalogue."""
     if not all([WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD]):
         return None, None
 
-    endpoint = f"{WP_BASE_URL}/wp-json/wp/v2/songs"
+    endpoint = f"{WP_BASE_URL}/wp-json/jattbeat/v1/catalog/upsert"
     auth = (WP_USERNAME, WP_APP_PASSWORD.replace(" ", ""))
-    summary = factual_seo_summary(song)
-    content = (
-        f"<p>{summary}</p>"
-        f'<p><a href="{song["source_url"]}" rel="nofollow noopener">'
-        "Original catalogue/source page</a></p>"
-    )
-    if song["audio_url"]:
-        content += (
-            f'<p><a href="{song["audio_url"]}" rel="nofollow noopener">'
-            "Listen at authorized provider</a></p>"
-        )
-
     payload = {
+        "catalog_key": f"render:{int(render_song_id)}",
+        "render_song_id": int(render_song_id),
         "title": song["title"],
+        "artist": song["artist"],
+        "album": song["album"],
+        "label": song["label"],
+        "release_date": song["release_date"],
+        "duration": song["duration"],
+        "source_url": song["source_url"],
+        "artwork_url": song["artwork_url"],
+        "external_id": song["external_id"],
+        "rights_status": (
+            "External provider playback link; retain artist and rights-holder attribution"
+        ),
+        "summary": factual_seo_summary(song),
         "status": WP_POST_STATUS if WP_POST_STATUS in ("draft", "publish") else "draft",
-        "content": content,
-        "excerpt": summary,
-        "meta": {
-            "ps_artist": song["artist"],
-            "ps_album": song["album"],
-            "ps_label": song["label"],
-            "ps_release_date": song["release_date"],
-            "ps_duration": song["duration"],
-            "ps_source_url": song["source_url"],
-            "ps_stream_url": song["audio_url"],
-            "ps_artwork_url": song["artwork_url"],
-            "ps_external_id": song["external_id"],
-            "ps_rights_status": (
-                "External provider link; distribution rights must be verified"
-            ),
-        },
+        "merge_missing": True,
     }
 
     with httpx.Client(timeout=25, follow_redirects=False, auth=auth) as client:
-        check = client.get(
-            endpoint,
-            params={
-                "slug": slugify(song["title"] + " " + song["artist"]),
-                "context": "edit",
-            },
-        )
-        check.raise_for_status()
-        existing = check.json()
-        if existing:
-            post_id = existing[0]["id"]
-            response = client.post(f"{endpoint}/{post_id}", json=payload)
-        else:
-            response = client.post(endpoint, json=payload)
+        response = client.post(endpoint, json=payload)
         response.raise_for_status()
         result = response.json()
-        return result.get("id"), result.get("link")
+        post_id = result.get("post_id")
+        permalink = result.get("permalink")
+        if not post_id or not permalink:
+            raise ValueError("WordPress upsert did not return a post ID and permalink")
+        return int(post_id), str(permalink)
 
 
 def frontend_html():
@@ -753,10 +733,84 @@ def list_songs(limit: int = 50):
         item = dict(row)
         item.pop("source_url", None)
         item.pop("audio_url", None)
-        item["media_url"] = f"/media/{create_media_token(item['id'])}" if row["audio_url"] else ""
+        token = create_media_token(item["id"]) if row["audio_url"] else ""
+        item["media_url"] = f"{PUBLIC_API_BASE_URL}/media/{token}" if token else ""
+        item["download_url"] = f"{item['media_url']}?download=true" if token else ""
         item["source"] = "JattBeat"
         public_items.append(item)
     return {"count": total_count, "items": public_items}
+
+
+@app.get("/api/songs/{song_id}")
+def get_song_media(song_id: int):
+    """Return one catalogue row with a freshly minted short-lived media URL."""
+    with closing(db()) as conn:
+        row = conn.execute(
+            """SELECT id,title,artist,album,label,release_date,duration,artwork_url,audio_url
+               FROM songs WHERE id=?""",
+            (song_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Song not found.")
+    token = create_media_token(row["id"]) if row["audio_url"] else ""
+    media_url = f"{PUBLIC_API_BASE_URL}/media/{token}" if token else ""
+    return {
+        "id": row["id"], "title": row["title"], "artist": row["artist"],
+        "album": row["album"], "label": row["label"],
+        "release_date": row["release_date"], "duration": row["duration"],
+        "artwork_url": row["artwork_url"], "source": "JattBeat",
+        "media_url": media_url,
+        "download_url": f"{media_url}?download=true" if media_url else "",
+    }
+
+
+@app.post("/admin/sync-wordpress")
+def sync_existing_catalog_to_wordpress(
+    limit: int = 200,
+    offset: int = 0,
+    x_import_token: str = Header(default=""),
+):
+    """Backfill existing Render catalogue rows into WordPress in safe batches."""
+    if not IMPORT_TOKEN or not hmac.compare_digest(x_import_token, IMPORT_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid import token")
+    if not all([WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD]):
+        raise HTTPException(
+            status_code=503,
+            detail="Configure WP_BASE_URL, WP_USERNAME and WP_APP_PASSWORD on Render first.",
+        )
+
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    with closing(db()) as conn:
+        rows = conn.execute(
+            """SELECT id,fingerprint,external_id,title,artist,album,label,release_date,
+                      duration,description,source_url,audio_url,artwork_url
+               FROM songs ORDER BY id ASC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+
+    synced, errors = 0, []
+    for row in rows:
+        song = dict(row)
+        try:
+            wordpress_id, wordpress_url = wp_sync(song, row["id"])
+            with closing(db()) as conn:
+                conn.execute(
+                    "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
+                    (wordpress_id, wordpress_url, row["id"]),
+                )
+                conn.commit()
+            synced += 1
+        except Exception as exc:
+            errors.append({"render_song_id": row["id"], "error": str(exc)[:240]})
+
+    return {
+        "catalogue": "WordPress",
+        "scanned": len(rows),
+        "synced": synced,
+        "errors": errors[:30],
+        "next_offset": offset + len(rows) if len(rows) == limit else None,
+    }
 
 
 @app.post("/admin/import")
@@ -784,6 +838,7 @@ def import_feed(x_import_token: str = Header(default="")):
         entries = parse_feed(response.content)
         created, skipped, errors = 0, 0, []
 
+        wordpress_synced = 0
         for index, entry in enumerate(entries[:100]):
             try:
                 song = normalize_entry(entry)
@@ -793,8 +848,8 @@ def import_feed(x_import_token: str = Header(default="")):
                         (song["fingerprint"],),
                     ).fetchone()
                     if existing:
-                        # Refresh metadata for existing feed items so corrected
-                        # artist credits and newly authorized links can be applied.
+                        # Keep the Render row ID stable so the matching WP post
+                        # can be updated instead of creating another post.
                         conn.execute(
                             """UPDATE songs SET title=?, artist=?,
                                album=CASE WHEN ? != '' THEN ? ELSE album END,
@@ -817,36 +872,44 @@ def import_feed(x_import_token: str = Header(default="")):
                                 song["fingerprint"],
                             ),
                         )
+                        render_song_id = int(existing["id"])
                         conn.commit()
                         skipped += 1
-                        continue
+                    else:
+                        cursor = conn.execute(
+                            """INSERT INTO songs
+                            (fingerprint,external_id,title,artist,album,label,release_date,
+                             duration,description,source_url,audio_url,artwork_url,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                song["fingerprint"], song["external_id"], song["title"],
+                                song["artist"], song["album"], song["label"],
+                                song["release_date"], song["duration"], song["description"],
+                                song["source_url"], song["audio_url"], song["artwork_url"],
+                                datetime.now(timezone.utc).isoformat(),
+                            ),
+                        )
+                        render_song_id = int(cursor.lastrowid)
+                        conn.commit()
+                        created += 1
 
-                    wordpress_id, wordpress_url = wp_sync(song)
-                    conn.execute(
-                        """INSERT INTO songs
-                        (fingerprint,external_id,title,artist,album,label,
-                         release_date,duration,description,source_url,audio_url,
-                         artwork_url,wordpress_id,wordpress_url,created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            song["fingerprint"],
-                            song["external_id"],
-                            song["title"],
-                            song["artist"],
-                            song["album"],
-                            song["label"],
-                            song["release_date"],
-                            song["duration"],
-                            song["description"],                            song["source_url"],
-                            song["audio_url"],
-                            song["artwork_url"],
-                            wordpress_id,
-                            wordpress_url,
-                            datetime.now(timezone.utc).isoformat(),
-                        ),
-                    )
-                    conn.commit()
-                created += 1
+                # Never lose an imported row because WordPress is temporarily
+                # unavailable. The backfill endpoint can retry safely.
+                if WP_BASE_URL and WP_USERNAME and WP_APP_PASSWORD:
+                    try:
+                        wordpress_id, wordpress_url = wp_sync(song, render_song_id)
+                        with closing(db()) as conn:
+                            conn.execute(
+                                "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
+                                (wordpress_id, wordpress_url, render_song_id),
+                            )
+                            conn.commit()
+                        wordpress_synced += 1
+                    except Exception as wp_exc:
+                        errors.append({
+                            "item": index, "render_song_id": render_song_id,
+                            "wordpress_sync_error": str(wp_exc)[:200],
+                        })
             except Exception as exc:
                 errors.append({"item": index, "error": str(exc)[:240]})
 
@@ -854,6 +917,7 @@ def import_feed(x_import_token: str = Header(default="")):
             "feed_items": len(entries),
             "created": created,
             "duplicates_skipped": skipped,
+            "wordpress_synced": wordpress_synced,
             "errors": errors[:20],
         }
     except Exception as exc:
@@ -1016,7 +1080,10 @@ async def import_older_pages(request: Request, x_import_token: str = Header(defa
                         detail.raise_for_status()
                         song = _extract_older_song(detail.text, song_url)
                         with closing(db()) as conn:
-                            existing = conn.execute("SELECT id FROM songs WHERE fingerprint=? OR source_url=?", (song["fingerprint"], song["source_url"])).fetchone()
+                            existing = conn.execute(
+                                "SELECT id FROM songs WHERE fingerprint=? OR source_url=?",
+                                (song["fingerprint"], song["source_url"]),
+                            ).fetchone()
                             if existing:
                                 conn.execute(
                                     """UPDATE songs SET
@@ -1033,19 +1100,38 @@ async def import_older_pages(request: Request, x_import_token: str = Header(defa
                                      song["duration"], song["duration"], song["audio_url"], song["audio_url"],
                                      song["artwork_url"], song["artwork_url"], existing["id"]),
                                 )
+                                render_song_id = int(existing["id"])
                                 conn.commit()
                                 summary["duplicates_skipped"] += 1
-                                continue
-                            conn.execute("""INSERT INTO songs
-                                (fingerprint,external_id,title,artist,album,label,release_date,
-                                 duration,description,source_url,audio_url,artwork_url,created_at)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (song["fingerprint"],song["external_id"],song["title"],song["artist"],
-                                 song["album"],song["label"],song["release_date"],song["duration"],
-                                 song["description"],song["source_url"],song["audio_url"],song["artwork_url"],
-                                 datetime.now(timezone.utc).isoformat()))
-                            conn.commit()
-                        summary["created"] += 1
+                            else:
+                                cursor = conn.execute("""INSERT INTO songs
+                                    (fingerprint,external_id,title,artist,album,label,release_date,
+                                     duration,description,source_url,audio_url,artwork_url,created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (song["fingerprint"],song["external_id"],song["title"],song["artist"],
+                                     song["album"],song["label"],song["release_date"],song["duration"],
+                                     song["description"],song["source_url"],song["audio_url"],song["artwork_url"],
+                                     datetime.now(timezone.utc).isoformat()))
+                                render_song_id = int(cursor.lastrowid)
+                                conn.commit()
+                                summary["created"] += 1
+
+                        if WP_BASE_URL and WP_USERNAME and WP_APP_PASSWORD:
+                            try:
+                                wordpress_id, wordpress_url = wp_sync(song, render_song_id)
+                                with closing(db()) as conn:
+                                    conn.execute(
+                                        "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
+                                        (wordpress_id, wordpress_url, render_song_id),
+                                    )
+                                    conn.commit()
+                                summary.setdefault("wordpress_synced", 0)
+                                summary["wordpress_synced"] += 1
+                            except Exception as wp_exc:
+                                summary["errors"].append({
+                                    "url": song_url,
+                                    "wordpress_sync_error": str(wp_exc)[:180],
+                                })
                         await asyncio.sleep(0.6)
                     except Exception as exc:
                         summary["errors"].append({"url": song_url, "error": str(exc)[:180]})
