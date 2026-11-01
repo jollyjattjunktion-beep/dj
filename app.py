@@ -468,10 +468,93 @@ def root():
     return HTMLResponse(content=frontend_html())
 
 
+def seo_escape(value: str) -> str:
+    return (str(value or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def song_duration_iso(value: str) -> str:
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+    if not match:
+        return ""
+    minutes, seconds = int(match.group(1)), int(match.group(2))
+    return f"PT{minutes}M{seconds}S"
+
+
 @app.get("/song/{song_path}", response_class=HTMLResponse)
 def song_page(song_path: str):
-    # The frontend resolves the song from the live catalogue API.
-    return HTMLResponse(content=frontend_html())
+    match = re.match(r"^(\d+)", song_path)
+    if not match:
+        raise HTTPException(status_code=404, detail="Song not found")
+    song_id = int(match.group(1))
+    with closing(db()) as conn:
+        song = conn.execute(
+            """SELECT id,title,artist,album,label,release_date,duration,artwork_url
+               FROM songs WHERE id=?""",
+            (song_id,),
+        ).fetchone()
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    title = str(song["title"] or "Punjabi Song").strip()
+    artist = str(song["artist"] or "").strip()
+    title_tag = f"{title} – {artist} | Punjabi Song | JattBeat" if artist else f"{title} | Punjabi Song | JattBeat"
+    description = (
+        f"Listen to {title} by {artist} on JattBeat. "
+        f"Explore song details, release information, duration and more Punjabi music."
+        if artist else
+        f"Explore {title} on JattBeat. View song details, release information and more Punjabi music."
+    )
+    canonical = f"{os.getenv('SITE_URL', 'https://dj-laqb.onrender.com').rstrip('/')}/song/{song_id}-{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')}"
+    keywords = [
+        title, f"{title} song", f"{title} Punjabi song", artist,
+        "Punjabi songs", "Punjabi single track", "latest Punjabi songs",
+        "Punjabi songs 2026", "JattBeat",
+    ]
+    keywords = ", ".join(dict.fromkeys(k for k in keywords if k))
+    image_url = str(song["artwork_url"] or "")
+    tags = (
+        f'<title>{seo_escape(title_tag)}</title>\\n'
+        f'<meta name="description" content="{seo_escape(description)}">\\n'
+        f'<meta name="keywords" content="{seo_escape(keywords)}">\\n'
+        f'<link rel="canonical" href="{seo_escape(canonical)}">\\n'
+        f'<meta name="robots" content="index,follow,max-image-preview:large">\\n'
+        f'<meta property="og:type" content="music.song">\\n'
+        f'<meta property="og:site_name" content="JattBeat">\\n'
+        f'<meta property="og:title" content="{seo_escape(title_tag)}">\\n'
+        f'<meta property="og:description" content="{seo_escape(description)}">\\n'
+        f'<meta property="og:url" content="{seo_escape(canonical)}">\\n'
+        f'<meta property="og:locale" content="en_IN">\\n'
+        f'<meta name="twitter:card" content="summary_large_image">\\n'
+        f'<meta name="twitter:title" content="{seo_escape(title_tag)}">\\n'
+        f'<meta name="twitter:description" content="{seo_escape(description)}">\\n'
+        + (f'<meta property="og:image" content="{seo_escape(image_url)}">\\n<meta name="twitter:image" content="{seo_escape(image_url)}">\\n' if image_url else "")
+    )
+    schema = {
+        "@context": "https://schema.org",
+        "@type": "MusicRecording",
+        "name": title,
+        "url": canonical,
+        "inLanguage": "pa",
+        "genre": "Punjabi",
+        "publisher": {"@type": "Organization", "name": str(song["label"] or "JattBeat")},
+    }
+    if artist:
+        schema["byArtist"] = {"@type": "Person", "name": artist}
+    if image_url:
+        schema["image"] = image_url
+    if song["release_date"]:
+        schema["datePublished"] = str(song["release_date"])[:10]
+    duration_iso = song_duration_iso(song["duration"])
+    if duration_iso:
+        schema["duration"] = duration_iso
+    if song["album"]:
+        schema["inAlbum"] = {"@type": "MusicAlbum", "name": str(song["album"])}
+    schema_script = '<script type="application/ld+json">' + json.dumps(schema, ensure_ascii=False).replace("</", "<\\/") + '</script>'
+    html = frontend_html()
+    html = re.sub(r"<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
+    html = html.replace("</head>", tags + schema_script + "\\n</head>", 1)
+    return HTMLResponse(content=html)
 
 
 @app.get("/health")
