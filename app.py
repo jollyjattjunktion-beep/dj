@@ -277,8 +277,7 @@ def parse_title_and_artist(raw_title, supplied_artist=""):
     # Parse only an explicit, unambiguous "Song Title - Artist" / "Song Title | Artist".
     for separator in (" - ", " | "):
         if separator in title:
-            left, right = title.rsplit(separator, 1)
-            if left.strip() and right.strip():
+            left, right = title.rsplit(separator, 1)            if left.strip() and right.strip():
                 return left.strip(), right.strip()
 
     # Do not guess artist names from arbitrary trailing words.
@@ -557,8 +556,7 @@ def song_page(song_path: str):
 
     # Put song-specific text in the initial HTML response as well as in the
     # browser-side renderer, so crawlers can read the page without JS execution.
-    html = html.replace('<section class="home" id="homeView">', '<section class="home hidden" id="homeView">', 1)
-    html = html.replace('<section class="detail" id="detailView">', '<section class="detail active" id="detailView">', 1)
+    html = html.replace('<section class="home" id="homeView">', '<section class="home hidden" id="homeView">', 1)    html = html.replace('<section class="detail" id="detailView">', '<section class="detail active" id="detailView">', 1)
     html = html.replace('<span id="crumbTitle">Song</span>', f'<span id="crumbTitle">{seo_escape(title)}</span>', 1)
     html = html.replace('<h1 class="detail-title" id="detailTitle">Song title</h1>', f'<h1 class="detail-title" id="detailTitle">{seo_escape(title)}</h1>', 1)
     html = html.replace('<span id="detailArtist">Artist</span>', f'<span id="detailArtist">{seo_escape(artist)}</span>', 1)
@@ -684,7 +682,10 @@ def list_songs(limit: int = 50):
         rows = conn.execute(
             """SELECT id,title,artist,album,label,release_date,duration,
                       source_url,audio_url,artwork_url,wordpress_url
-               FROM songs ORDER BY id DESC LIMIT ?""",
+               FROM songs
+               ORDER BY CASE WHEN release_date IS NULL OR release_date = '' THEN 1 ELSE 0 END,
+                        release_date DESC, id DESC
+               LIMIT ?""",
             (limit,),
         ).fetchall()
     public_items = []
@@ -837,8 +838,7 @@ class _PageParser(HTMLParser):
 def _extract_listing_links(html, page_url):
     parser = _PageParser()
     parser.feed(html)
-    found = []
-    for href in parser.links:
+    found = []    for href in parser.links:
         absolute = urljoin(page_url, href)
         parsed = urlparse(absolute)
         if parsed.scheme == "https" and parsed.hostname in {"www.djjohal.com", "djjohal.com"} and re.search(r"/single/[^/?#]+\.html$", parsed.path, re.I):
