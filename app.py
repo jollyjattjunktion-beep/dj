@@ -11,7 +11,8 @@ from urllib.parse import urlparse
 
 import feedparser
 import httpx
-from fastapi import FastAPI, Header, HTTPException\nfrom fastapi.responses import FileResponse
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
 
 APP_NAME = "Preet Music Portal API"
 DB_PATH = os.getenv("DB_PATH", "/tmp/preet_music_portal.sqlite3")
