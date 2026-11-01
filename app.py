@@ -816,6 +816,7 @@ class _PageParser(HTMLParser):
         self.title_text = []
         self.in_title = False
         self.media_links = []
+        self.text_parts = []
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "a" and a.get("href"):
@@ -834,6 +835,8 @@ class _PageParser(HTMLParser):
         if tag == "title":
             self.in_title = False
     def handle_data(self, data):
+        if clean(data):
+            self.text_parts.append(clean(data))
         if self.in_title:
             self.title_text.append(data)
 
@@ -853,9 +856,18 @@ def _extract_older_song(detail_html, source_url):
     parser = _PageParser()
     parser.feed(detail_html)
     meta = parser.meta
-    raw_title = clean(meta.get("og:title") or meta.get("twitter:title") or " ".join(parser.title_text))
-    raw_title = re.sub(r"\s*[-|]\s*(DJJOhAL|DJJOhAL\.com).*$", "", raw_title, flags=re.I).strip()
-    title, artist = parse_title_and_artist(raw_title, "")
+    page_text = clean(" ".join(parser.text_parts))
+    description_match = re.search(
+        r"Download\s+(.+?)\s+MP3\s+song\s+by\s+(.+?)\s+on\s+DJJOhAL",
+        page_text, re.I,
+    )
+    if description_match:
+        title = clean(description_match.group(1))
+        artist = clean(description_match.group(2))
+    else:
+        raw_title = clean(meta.get("og:title") or meta.get("twitter:title") or " ".join(parser.title_text))
+        raw_title = re.sub(r"\s*[-|]\s*(DJJOhAL|DJJOhAL\.com).*$", "", raw_title, flags=re.I).strip()
+        title, artist = parse_title_and_artist(raw_title, "")
     artwork = urljoin(source_url, meta.get("og:image") or meta.get("twitter:image") or "")
     audio = ""
     for candidate in parser.media_links + parser.links:
@@ -865,26 +877,33 @@ def _extract_older_song(detail_html, source_url):
             audio = candidate
             break
     duration = clean(meta.get("music:duration") or meta.get("duration"))
-    label = clean(meta.get("music:album") or meta.get("music:label"))
+    m = re.search(r"Duration\s*:?\s*(\d{1,2}:\d{2})", page_text, re.I)
+    if m: duration = m.group(1)
+    label = clean(meta.get("music:label") or meta.get("label"))
+    m = re.search(r"Label\s+(.+?)\s+(?:Released|Duration|Song)", page_text, re.I)
+    if m: label = clean(m.group(1))
     release_date = clean(meta.get("article:published_time") or meta.get("date") or meta.get("datepublished"))
-    if release_date:
-        release_date = release_date[:10]
-    if not title:
-        raise ValueError("Song title could not be read from detail page")
+    m = re.search(r"Released\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", page_text, re.I)
+    if m:
+        for fmt in ("%d %b %Y", "%d %B %Y"):
+            try:
+                release_date = datetime.strptime(m.group(1), fmt).date().isoformat()
+                break
+            except ValueError:
+                pass
+    elif release_date:
+        m = re.search(r"\d{4}-\d{2}-\d{2}", release_date)
+        release_date = m.group(0) if m else release_date[:10]
+    if not title: raise ValueError("Song title could not be read from detail page")
     if artwork:
         p = urlparse(artwork)
-        if p.scheme != "https" or not p.hostname:
-            artwork = ""
+        if p.scheme != "https" or not p.hostname: artwork = ""
     external_id = source_url.rstrip("/").rsplit("/", 1)[-1]
     fingerprint = hashlib.sha256(source_url.rstrip("/").lower().encode("utf-8")).hexdigest()
-    return {
-        "fingerprint": fingerprint, "external_id": external_id,
-        "title": title, "artist": artist, "album": "",
-        "label": label, "release_date": release_date,
-        "duration": duration, "description": "",
-        "source_url": source_url, "audio_url": audio,
-        "artwork_url": artwork,
-    }
+    return {"fingerprint": fingerprint, "external_id": external_id, "title": title,
+            "artist": artist, "album": "", "label": label, "release_date": release_date,
+            "duration": duration, "description": "", "source_url": source_url,
+            "audio_url": audio, "artwork_url": artwork}
 
 @app.get("/admin", response_class=HTMLResponse)
 def older_pages_admin():
@@ -933,6 +952,22 @@ async def import_older_pages(request: Request, x_import_token: str = Header(defa
                         with closing(db()) as conn:
                             existing = conn.execute("SELECT id FROM songs WHERE fingerprint=? OR source_url=?", (song["fingerprint"], song["source_url"])).fetchone()
                             if existing:
+                                conn.execute(
+                                    """UPDATE songs SET
+                                       title=CASE WHEN ? != '' THEN ? ELSE title END,
+                                       artist=CASE WHEN (artist IS NULL OR artist='') AND ? != '' THEN ? ELSE artist END,
+                                       label=CASE WHEN (label IS NULL OR label='') AND ? != '' THEN ? ELSE label END,
+                                       release_date=CASE WHEN (release_date IS NULL OR release_date='') AND ? != '' THEN ? ELSE release_date END,
+                                       duration=CASE WHEN (duration IS NULL OR duration='') AND ? != '' THEN ? ELSE duration END,
+                                       audio_url=CASE WHEN (audio_url IS NULL OR audio_url='') AND ? != '' THEN ? ELSE audio_url END,
+                                       artwork_url=CASE WHEN (artwork_url IS NULL OR artwork_url='') AND ? != '' THEN ? ELSE artwork_url END
+                                       WHERE id=?""",
+                                    (song["title"], song["title"], song["artist"], song["artist"],
+                                     song["label"], song["label"], song["release_date"], song["release_date"],
+                                     song["duration"], song["duration"], song["audio_url"], song["audio_url"],
+                                     song["artwork_url"], song["artwork_url"], existing["id"]),
+                                )
+                                conn.commit()
                                 summary["duplicates_skipped"] += 1
                                 continue
                             conn.execute("""INSERT INTO songs
