@@ -99,7 +99,7 @@ def clean(value):
         return ""
     if isinstance(value, (list, tuple)):
         value = ", ".join(str(item) for item in value)
-    return re.sub(r"\\s+", " ", str(value)).strip()
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def safe_url(value, allowed_hosts, required=False):
@@ -267,7 +267,7 @@ def factual_seo_summary(song):
 
 
 def slugify(value):
-    value = re.sub(r"[^\\w-]+", "-", value.lower(), flags=re.UNICODE)
+    value = re.sub(r"[^\w-]+", "-", value.lower(), flags=re.UNICODE)
     return re.sub(r"-+", "-", value).strip("-")[:160] or "song"
 
 
