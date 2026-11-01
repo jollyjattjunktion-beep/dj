@@ -365,7 +365,7 @@ add_action('rest_api_init', function () {
  * every card/detail page is rendered from the Song custom post type.
  * ---------------------------------------------------------------------- */
 function jattbeat_song_query($limit, $page = 1) {
-    return new WP_Query([
+    $args = [
         'post_type' => 'song',
         'post_status' => 'publish',
         'posts_per_page' => max(1, min(100, (int) $limit)),
@@ -375,7 +375,16 @@ function jattbeat_song_query($limit, $page = 1) {
         'order' => 'DESC',
         'ignore_sticky_posts' => true,
         'no_found_rows' => false,
-    ]);
+    ];
+    $artist_filter = sanitize_text_field(wp_unslash($_GET['artist'] ?? ''));
+    if ($artist_filter !== '') {
+        $args['meta_query'] = [[
+            'key' => 'ps_artist',
+            'value' => $artist_filter,
+            'compare' => 'LIKE',
+        ]];
+    }
+    return new WP_Query($args);
 }
 
 function jattbeat_song_card($post_id) {
@@ -484,12 +493,76 @@ function jattbeat_render_catalogue($mode = 'home', $atts = []) {
           ?>
         </nav>
       <?php endif; ?>
+      <nav class="jb-bottomnav" aria-label="JattBeat navigation">
+        <div class="jb-bottomnav-inner">
+          <a href="<?php echo esc_url(home_url('/')); ?>"><b>⌂</b>Home</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>♨</b>Trending</a>
+          <button type="button" data-jb-nav-search><b>⌕</b>Search</button>
+          <a href="<?php echo esc_url(home_url('/artists/')); ?>"><b>♫</b>Artists</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>▦</b>More</a>
+        </div>
+      </nav>
       <?php echo jattbeat_audio_dock(); ?>
     </div>
     <?php
     wp_reset_postdata();
     return ob_get_clean();
 }
+
+function jattbeat_render_artists() {
+    $ids = get_posts([
+        'post_type' => 'song',
+        'post_status' => 'publish',
+        'posts_per_page' => 1000,
+        'fields' => 'ids',
+        'meta_key' => 'ps_artist',
+        'orderby' => 'meta_value',
+        'order' => 'ASC',
+    ]);
+    $artists = [];
+    foreach ($ids as $post_id) {
+        $artist = trim((string) get_post_meta($post_id, 'ps_artist', true));
+        if ($artist === '') { continue; }
+        if (!isset($artists[$artist])) { $artists[$artist] = 0; }
+        $artists[$artist]++;
+    }
+    uksort($artists, 'strnatcasecmp');
+
+    ob_start();
+    ?>
+    <div class="jb-shell">
+      <header class="jb-topbar">
+        <a class="jb-brand" href="<?php echo esc_url(home_url('/')); ?>"><span class="jb-brandmark">♫</span><span>Jatt<strong>Beat</strong></span></a>
+        <label class="jb-search"><span>⌕</span><input type="search" data-jb-search placeholder="Search artists" aria-label="Search artists"></label>
+      </header>
+      <div class="jb-section-head jb-all-heading"><h1>Punjabi Artists</h1><span><?php echo esc_html(count($artists)); ?> artists</span></div>
+      <?php if (!$artists) : ?>
+        <p class="jb-empty">Artist pages will appear as verified credits are added.</p>
+      <?php else : ?>
+        <div class="jb-artist-grid" data-jb-list>
+          <?php foreach ($artists as $artist => $count) : ?>
+            <a class="jb-artist-card" data-jb-card href="<?php echo esc_url(add_query_arg('artist', $artist, home_url('/songs/'))); ?>">
+              <span class="jb-artist-avatar">♫</span>
+              <span><strong><?php echo esc_html($artist); ?></strong><small><?php echo esc_html(number_format_i18n($count)); ?> songs</small></span>
+            </a>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+      <nav class="jb-bottomnav" aria-label="JattBeat navigation">
+        <div class="jb-bottomnav-inner">
+          <a href="<?php echo esc_url(home_url('/')); ?>"><b>⌂</b>Home</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>♨</b>Trending</a>
+          <button type="button" data-jb-nav-search><b>⌕</b>Search</button>
+          <a href="<?php echo esc_url(home_url('/artists/')); ?>"><b>♫</b>Artists</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>▦</b>More</a>
+        </div>
+      </nav>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
+add_shortcode('jattbeat_artists', 'jattbeat_render_artists');
 
 add_shortcode('jattbeat_homepage', function () {
     return jattbeat_render_catalogue('home');
@@ -626,6 +699,12 @@ add_action('wp_enqueue_scripts', function () {
       .jb-pagination{display:flex;align-items:center;justify-content:center;gap:14px;margin:24px 0;color:var(--jb-muted);font-size:13px}
       .jb-pagination a,.jb-pagination .is-disabled{padding:9px 15px;border:1px solid var(--jb-line);border-radius:22px;background:#191a25;color:#fff;text-decoration:none;font-weight:800}
       .jb-pagination .is-disabled{opacity:.35}
+      .jb-artist-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+      .jb-artist-card{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--jb-line);border-radius:13px;background:#151722;color:#fff;text-decoration:none}
+      .jb-artist-avatar{display:grid;place-items:center;width:44px;height:44px;flex:none;border:2px solid var(--jb-red);border-radius:50%;color:var(--jb-red);font-size:22px}
+      .jb-artist-card strong,.jb-artist-card small{display:block}
+      .jb-artist-card small{margin-top:4px;color:var(--jb-muted);font-size:12px}
+      .jb-bottomnav{display:none}
       .jb-audio-dock{position:fixed;right:18px;bottom:18px;left:18px;z-index:99999;display:flex;align-items:center;gap:12px;max-width:680px;margin:auto;padding:10px 13px;border:1px solid #ffffff30;border-radius:15px;background:#171923f5;box-shadow:0 10px 40px #0009}
       .jb-audio-dock[hidden]{display:none}
       .jb-audio-dock img{width:42px;height:42px;border-radius:8px;object-fit:cover}
@@ -678,6 +757,11 @@ add_action('wp_enqueue_scripts', function () {
         .jb-detail-artist{font-size:14px}
         .jb-detail-actions{margin-top:14px}
         .jb-action{flex:1;padding:11px 12px;font-size:13px}
+        .jb-bottomnav{position:fixed;right:0;bottom:0;left:0;z-index:99990;display:block;padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom));border-top:1px solid #ffffff1a;background:#090a10f2;backdrop-filter:blur(18px)}
+        .jb-bottomnav-inner{display:grid;grid-template-columns:repeat(5,1fr);max-width:640px;margin:0 auto}
+        .jb-bottomnav a,.jb-bottomnav button{display:flex;flex-direction:column;align-items:center;gap:3px;padding:3px;border:0;background:transparent;color:#ddd;text-decoration:none;font-size:11px}
+        .jb-bottomnav b{font-size:22px}
+        .jb-audio-dock{bottom:76px}
         .jb-info-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
         .jb-audio-dock{right:8px;bottom:9px;left:8px;gap:8px;padding:8px}
         .jb-audio-dock img{width:36px;height:36px}
@@ -749,6 +833,13 @@ add_action('wp_footer', function () {
         } finally {
           button.disabled = false;
         }
+      });
+
+      document.addEventListener('click', function (event) {
+        const navSearch = event.target.closest('[data-jb-nav-search]');
+        if (!navSearch) return;
+        const search = document.querySelector('[data-jb-search]');
+        if (search) { search.focus(); search.scrollIntoView({block: 'nearest', behavior: 'smooth'}); }
       });
 
       document.addEventListener('input', function (event) {
