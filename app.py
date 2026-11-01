@@ -11,6 +11,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 import time
+import asyncio
 from urllib.parse import urlparse
 
 import feedparser
@@ -258,7 +259,6 @@ KNOWN_MEDIA = {
         "duration": "02:05", "label": "Rhythm & Flow",
     },
 }
-
 
 def parse_title_and_artist(raw_title, supplied_artist=""):
     title = clean(raw_title)
@@ -517,8 +517,7 @@ def song_page(song_path: str):
     tags = (
         f'<title>{seo_escape(title_tag)}</title>\n'
         f'<meta name="description" content="{seo_escape(description)}">\n'
-        f'<meta name="keywords" content="{seo_escape(keywords)}">\n'
-        f'<link rel="canonical" href="{seo_escape(canonical)}">\n'
+        f'<meta name="keywords" content="{seo_escape(keywords)}">\n'        f'<link rel="canonical" href="{seo_escape(canonical)}">\n'
         f'<meta name="robots" content="index,follow,max-image-preview:large">\n'
         f'<meta property="og:type" content="music.song">\n'
         f'<meta property="og:site_name" content="JattBeat">\n'
@@ -777,8 +776,7 @@ def import_feed(x_import_token: str = Header(default="")):
                             song["label"],
                             song["release_date"],
                             song["duration"],
-                            song["description"],
-                            song["source_url"],
+                            song["description"],                            song["source_url"],
                             song["audio_url"],
                             song["artwork_url"],
                             wordpress_id,
@@ -799,3 +797,155 @@ def import_feed(x_import_token: str = Header(default="")):
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)[:400])
+
+# ---------------------------------------------------------------------------
+# JattBeat admin: import older catalogue pages (new-only, deduplicated)
+# ---------------------------------------------------------------------------
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
+from fastapi import Request
+
+class _PageParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.meta = {}
+        self.title_text = []
+        self.in_title = False
+        self.media_links = []
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "a" and a.get("href"):
+            self.links.append(a["href"])
+        if tag == "meta":
+            key = (a.get("property") or a.get("name") or a.get("itemprop") or "").lower()
+            if key and a.get("content"):
+                self.meta[key] = a["content"]
+        if tag in ("audio", "source") and a.get("src"):
+            self.media_links.append(a["src"])
+        if tag == "a" and a.get("href", "").lower().split("?")[0].endswith(".mp3"):
+            self.media_links.append(a["href"])
+        if tag == "title":
+            self.in_title = True
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self.in_title = False
+    def handle_data(self, data):
+        if self.in_title:
+            self.title_text.append(data)
+
+def _extract_listing_links(html, page_url):
+    parser = _PageParser()
+    parser.feed(html)
+    found = []
+    for href in parser.links:
+        absolute = urljoin(page_url, href)
+        parsed = urlparse(absolute)
+        if parsed.scheme == "https" and parsed.hostname in {"www.djjohal.com", "djjohal.com"} and re.search(r"/single/[^/?#]+\.html$", parsed.path, re.I):
+            if absolute not in found:
+                found.append(absolute)
+    return found
+
+def _extract_older_song(detail_html, source_url):
+    parser = _PageParser()
+    parser.feed(detail_html)
+    meta = parser.meta
+    raw_title = clean(meta.get("og:title") or meta.get("twitter:title") or " ".join(parser.title_text))
+    raw_title = re.sub(r"\s*[-|]\s*(DJJOhAL|DJJOhAL\.com).*$", "", raw_title, flags=re.I).strip()
+    title, artist = parse_title_and_artist(raw_title, "")
+    artwork = urljoin(source_url, meta.get("og:image") or meta.get("twitter:image") or "")
+    audio = ""
+    for candidate in parser.media_links + parser.links:
+        candidate = urljoin(source_url, candidate)
+        p = urlparse(candidate)
+        if p.scheme == "https" and (p.hostname or "").lower() in MEDIA_HOSTS and p.path.lower().endswith(".mp3"):
+            audio = candidate
+            break
+    duration = clean(meta.get("music:duration") or meta.get("duration"))
+    label = clean(meta.get("music:album") or meta.get("music:label"))
+    release_date = clean(meta.get("article:published_time") or meta.get("date") or meta.get("datepublished"))
+    if release_date:
+        release_date = release_date[:10]
+    if not title:
+        raise ValueError("Song title could not be read from detail page")
+    if artwork:
+        p = urlparse(artwork)
+        if p.scheme != "https" or not p.hostname:
+            artwork = ""
+    external_id = source_url.rstrip("/").rsplit("/", 1)[-1]
+    fingerprint = hashlib.sha256(source_url.rstrip("/").lower().encode("utf-8")).hexdigest()
+    return {
+        "fingerprint": fingerprint, "external_id": external_id,
+        "title": title, "artist": artist, "album": "",
+        "label": label, "release_date": release_date,
+        "duration": duration, "description": "",
+        "source_url": source_url, "audio_url": audio,
+        "artwork_url": artwork,
+    }
+
+@app.get("/admin", response_class=HTMLResponse)
+def older_pages_admin():
+    page = """<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JattBeat Admin</title>
+    <style>body{margin:0;background:#090a10;color:#f7f7fb;font:16px system-ui;padding:22px}.wrap{max-width:720px;margin:auto}h1 span{color:#f20d32}.card{background:#151722;border:1px solid #343544;border-radius:16px;padding:18px;margin:18px 0}textarea,input{width:100%;box-sizing:border-box;background:#090a10;color:white;border:1px solid #414353;border-radius:10px;padding:13px;margin:8px 0 14px;font:14px system-ui}textarea{min-height:150px}button{background:#f20d32;color:white;border:0;border-radius:25px;padding:13px 22px;font-weight:800;font-size:15px}small{color:#aaa}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#090a10;padding:14px;border-radius:10px}</style>
+    <div class="wrap"><h1>Jatt<span>Beat</span> Admin</h1><div class="card"><h2>Import Older Pages</h2><p>Paste one or more DJJOhAL Single Track category page URLs. New songs only; duplicates are skipped.</p>
+    <label>Import token</label><input id="token" type="password" autocomplete="off" placeholder="Your Render IMPORT_TOKEN">
+    <label>Category page URLs (one per line)</label><textarea id="urls">https://www.djjohal.com/category/single-track/2.html
+https://www.djjohal.com/category/single-track/3.html</textarea>
+    <button id="go">Import Older Pages</button><p><small>Pages are processed in the order entered. The public catalogue remains sorted newest first by release date.</small></p></div><div class="card"><h3>Import result</h3><pre id="result">Ready.</pre></div></div>
+    <script>document.getElementById('go').onclick=async()=>{const b=document.getElementById('go'),out=document.getElementById('result');const token=document.getElementById('token').value;const urls=document.getElementById('urls').value.split(/\n+/).map(x=>x.trim()).filter(Boolean);if(!token||!urls.length){out.textContent='Enter the import token and at least one page URL.';return}b.disabled=true;b.textContent='Importing…';out.textContent='Fetching listing pages and song details. Please keep this page open.';try{const r=await fetch('/admin/import-pages',{method:'POST',headers:{'Content-Type':'application/json','X-Import-Token':token},body:JSON.stringify({urls})});const data=await r.json();if(!r.ok)throw new Error(data.detail||('HTTP '+r.status));out.textContent=JSON.stringify(data,null,2)}catch(e){out.textContent='Import failed: '+e.message}finally{b.disabled=false;b.textContent='Import Older Pages'}}</script></html>"""
+    return HTMLResponse(page)
+
+@app.post("/admin/import-pages")
+async def import_older_pages(request: Request, x_import_token: str = Header(default="")):
+    if not IMPORT_TOKEN or not hmac.compare_digest(x_import_token, IMPORT_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid import token")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Expected JSON containing a urls array")
+    urls = payload.get("urls", []) if isinstance(payload, dict) else []
+    if not isinstance(urls, list) or not urls or len(urls) > 20:
+        raise HTTPException(status_code=400, detail="Provide between 1 and 20 category page URLs")
+    normalized_pages = []
+    for raw in urls:
+        parsed = urlparse(clean(raw))
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() not in {"www.djjohal.com", "djjohal.com"} or not re.fullmatch(r"/category/single-track(?:/\d+)?\.html", parsed.path, re.I):
+            raise HTTPException(status_code=400, detail=f"Not an approved Single Track category URL: {raw}")
+        normalized_pages.append(raw)
+    summary = {"pages_checked": 0, "song_pages_found": 0, "created": 0, "duplicates_skipped": 0, "errors": []}
+    headers = {"User-Agent": USER_AGENT}
+    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
+        for page_url in normalized_pages:
+            try:
+                response = await client.get(page_url)
+                response.raise_for_status()
+                links = _extract_listing_links(response.text, str(response.url))
+                summary["pages_checked"] += 1
+                summary["song_pages_found"] += len(links)
+                for song_url in links[:60]:
+                    try:
+                        detail = await client.get(song_url)
+                        detail.raise_for_status()
+                        song = _extract_older_song(detail.text, song_url)
+                        with closing(db()) as conn:
+                            existing = conn.execute("SELECT id FROM songs WHERE fingerprint=? OR source_url=?", (song["fingerprint"], song["source_url"])).fetchone()
+                            if existing:
+                                summary["duplicates_skipped"] += 1
+                                continue
+                            conn.execute("""INSERT INTO songs
+                                (fingerprint,external_id,title,artist,album,label,release_date,
+                                 duration,description,source_url,audio_url,artwork_url,created_at)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (song["fingerprint"],song["external_id"],song["title"],song["artist"],
+                                 song["album"],song["label"],song["release_date"],song["duration"],
+                                 song["description"],song["source_url"],song["audio_url"],song["artwork_url"],
+                                 datetime.now(timezone.utc).isoformat()))
+                            conn.commit()
+                        summary["created"] += 1
+                        await asyncio.sleep(0.6)
+                    except Exception as exc:
+                        summary["errors"].append({"url": song_url, "error": str(exc)[:180]})
+            except Exception as exc:
+                summary["errors"].append({"url": page_url, "error": str(exc)[:180]})
+    summary["errors"] = summary["errors"][:30]
+    return summary
