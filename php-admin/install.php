@@ -1,0 +1,9 @@
+<?php require __DIR__.'/app/bootstrap.php';
+if(envv('INSTALL_LOCK')==='1'){http_response_code(403);exit('Installer locked.');}
+$exists=false;try{$exists=(bool)db()->query("SELECT name FROM sqlite_master WHERE type='table' AND name='admins'")->fetchColumn();}catch(Throwable $e){}
+if($exists){http_response_code(403);exit('Already installed.');}
+$error='';
+if($_SERVER['REQUEST_METHOD']==='POST'){check_csrf();$u=trim($_POST['username']??'');$pw=$_POST['password']??'';$site=trim($_POST['site_name']??'JattBeat');
+if(strlen($u)<4||strlen($pw)<12)$error='Username must be 4+ characters and password 12+ characters.';
+else{try{$sql=file_get_contents(__DIR__.'/app/schema.sql');db()->exec($sql);$q=db()->prepare('INSERT INTO admins(username,password_hash) VALUES(?,?)');$q->execute([$u,password_hash($pw,PASSWORD_DEFAULT)]);save_setting('site_name',$site);save_setting('site_description','Discover music and artists.');header('Location: /login.php');exit;}catch(Throwable $e){$error='Setup failed: '.$e->getMessage();}}}
+?><!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Install JattBeat Admin</title><link rel="stylesheet" href="/assets/style.css"></head><body class="auth"><form class="panel authbox" method="post"><p class="eyebrow">JATTBEAT SETUP</p><h1>Install music admin</h1><?php if($error):?><p class="error"><?=e($error)?></p><?php endif?><input type="hidden" name="_csrf" value="<?=e(csrf())?>"><label>Website name<input name="site_name" value="JattBeat" required></label><label>Admin username<input name="username" minlength="4" required></label><label>Password (minimum 12 characters)<input type="password" name="password" minlength="12" required></label><button>Install</button></form></body></html>
