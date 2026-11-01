@@ -12,12 +12,15 @@ from contextlib import closing
 from datetime import datetime, timezone
 import time
 import asyncio
+import tempfile
 from urllib.parse import urlparse
+
+from starlette.background import BackgroundTask
 
 import feedparser
 import httpx
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 APP_NAME = "Preet Music Portal API"
 DB_PATH = os.getenv("DB_PATH", "/tmp/preet_music_portal.sqlite3")
@@ -631,7 +634,7 @@ async def stream_song_media(token: str, download: bool = False, range_header: st
         raise HTTPException(status_code=403, detail="This media link is invalid or has expired. Refresh the song page.")
 
     with closing(db()) as conn:
-        song = conn.execute("SELECT title, audio_url FROM songs WHERE id=?", (song_id,)).fetchone()
+        song = conn.execute("SELECT title, artist, audio_url FROM songs WHERE id=?", (song_id,)).fetchone()
     if not song or not song["audio_url"]:
         raise HTTPException(status_code=404, detail="Audio is not available for this song.")
 
@@ -642,7 +645,9 @@ async def stream_song_media(token: str, download: bool = False, range_header: st
 
     client = httpx.AsyncClient(timeout=None, follow_redirects=False)
     request_headers = {"User-Agent": USER_AGENT}
-    if range_header:
+    # Range requests remain streaming for playback. Downloads are fetched in full
+    # so their ID3 tags can be normalized before the attachment is returned.
+    if range_header and not download:
         request_headers["Range"] = range_header
     try:
         upstream_request = client.build_request("GET", media_url, headers=request_headers)
@@ -651,20 +656,67 @@ async def stream_song_media(token: str, download: bool = False, range_header: st
         await client.aclose()
         raise HTTPException(status_code=502, detail="The audio provider is temporarily unavailable.")
 
-    if upstream.status_code not in (200, 206):
+    expected_statuses = (200,) if download else (200, 206)
+    if upstream.status_code not in expected_statuses:
         status_code = upstream.status_code
         await upstream.aclose()
         await client.aclose()
         raise HTTPException(status_code=502, detail=f"Audio provider returned status {status_code}.")
 
+    filename = re.sub(r"[^A-Za-z0-9 _-]", "", song["title"] or "JattBeat Song").strip() or "JattBeat Song"
     response_headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+    content_type = upstream.headers.get("content-type", "audio/mpeg")
+
+    if download:
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="jattbeat-", suffix=".mp3", delete=False) as temp_file:
+                temp_path = temp_file.name
+                total_bytes = 0
+                async for chunk in upstream.aiter_raw():
+                    total_bytes += len(chunk)
+                    if total_bytes > 50 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail="This audio file is too large to prepare as a download.")
+                    temp_file.write(chunk)
+
+            await upstream.aclose()
+            await client.aclose()
+
+            # Replace all provider-supplied ID3 fields/artwork with only the
+            # verified catalogue title and artist. The MPEG audio frames are
+            # not decoded or re-encoded.
+            from mutagen.id3 import ID3, TIT2, TPE1
+            ID3().delete(temp_path)
+            clean_tags = ID3()
+            clean_tags.add(TIT2(encoding=3, text=[song["title"] or "Untitled"]))
+            if (song["artist"] or "").strip():
+                clean_tags.add(TPE1(encoding=3, text=[song["artist"].strip()]))
+            clean_tags.save(temp_path, v1=0, v2_version=3)
+
+            return FileResponse(
+                temp_path,
+                media_type="audio/mpeg",
+                filename=f"{filename}.mp3",
+                headers=response_headers,
+                background=BackgroundTask(os.unlink, temp_path),
+            )
+        except HTTPException:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            await upstream.aclose()
+            await client.aclose()
+            raise
+        except Exception:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="The clean download could not be prepared. Please try again.")
+
     for header in ("content-length", "content-range", "accept-ranges"):
         if header in upstream.headers:
             response_headers[header.title()] = upstream.headers[header]
-    filename = re.sub(r"[^A-Za-z0-9 _-]", "", song["title"] or "JattBeat Song").strip() or "JattBeat Song"
-    disposition = "attachment" if download else "inline"
-    response_headers["Content-Disposition"] = f'{disposition}; filename="{filename}.mp3"'
-    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    response_headers["Content-Disposition"] = f'inline; filename="{filename}.mp3"'
 
     async def relay():
         try:
