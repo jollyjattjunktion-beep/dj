@@ -4,9 +4,13 @@
 Copy this whole folder into `wp-content/plugins/preet-song-catalog/`, activate **JattBeat Song Catalog**, then open Settings → Permalinks and click Save Changes.
 
 ## Required WordPress pages
-Create a Home page containing `[jattbeat_homepage]` and a Songs page with slug `songs` containing `[jattbeat_all_songs]`. Set Home as the static front page under Settings → Reading.
+Create these WordPress pages:
 
-Individual Song posts use `/song/<title-and-artist>/`.
+- Home: `[jattbeat_homepage]`
+- Songs (slug `songs`): `[jattbeat_all_songs]`
+- Artists (slug `artists`): `[jattbeat_artists]`
+
+Set Home as the static front page under Settings → Reading. Individual Song posts use `/song/<title-and-artist>/`.
 
 ## Render connection
 Open WordPress → Settings → JattBeat Catalog and keep the API URL as `https://dj-laqb.onrender.com` unless your Render service URL is different.
