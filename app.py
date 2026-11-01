@@ -514,21 +514,21 @@ def song_page(song_path: str):
     keywords = ", ".join(dict.fromkeys(k for k in keywords if k))
     image_url = str(song["artwork_url"] or "")
     tags = (
-        f'<title>{seo_escape(title_tag)}</title>\\n'
-        f'<meta name="description" content="{seo_escape(description)}">\\n'
-        f'<meta name="keywords" content="{seo_escape(keywords)}">\\n'
-        f'<link rel="canonical" href="{seo_escape(canonical)}">\\n'
-        f'<meta name="robots" content="index,follow,max-image-preview:large">\\n'
-        f'<meta property="og:type" content="music.song">\\n'
-        f'<meta property="og:site_name" content="JattBeat">\\n'
-        f'<meta property="og:title" content="{seo_escape(title_tag)}">\\n'
-        f'<meta property="og:description" content="{seo_escape(description)}">\\n'
-        f'<meta property="og:url" content="{seo_escape(canonical)}">\\n'
-        f'<meta property="og:locale" content="en_IN">\\n'
-        f'<meta name="twitter:card" content="summary_large_image">\\n'
-        f'<meta name="twitter:title" content="{seo_escape(title_tag)}">\\n'
-        f'<meta name="twitter:description" content="{seo_escape(description)}">\\n'
-        + (f'<meta property="og:image" content="{seo_escape(image_url)}">\\n<meta name="twitter:image" content="{seo_escape(image_url)}">\\n' if image_url else "")
+        f'<title>{seo_escape(title_tag)}</title>\n'
+        f'<meta name="description" content="{seo_escape(description)}">\n'
+        f'<meta name="keywords" content="{seo_escape(keywords)}">\n'
+        f'<link rel="canonical" href="{seo_escape(canonical)}">\n'
+        f'<meta name="robots" content="index,follow,max-image-preview:large">\n'
+        f'<meta property="og:type" content="music.song">\n'
+        f'<meta property="og:site_name" content="JattBeat">\n'
+        f'<meta property="og:title" content="{seo_escape(title_tag)}">\n'
+        f'<meta property="og:description" content="{seo_escape(description)}">\n'
+        f'<meta property="og:url" content="{seo_escape(canonical)}">\n'
+        f'<meta property="og:locale" content="en_IN">\n'
+        f'<meta name="twitter:card" content="summary_large_image">\n'
+        f'<meta name="twitter:title" content="{seo_escape(title_tag)}">\n'
+        f'<meta name="twitter:description" content="{seo_escape(description)}">\n'
+        + (f'<meta property="og:image" content="{seo_escape(image_url)}">\n<meta name="twitter:image" content="{seo_escape(image_url)}">\n' if image_url else "")
     )
     schema = {
         "@context": "https://schema.org",
@@ -553,7 +553,7 @@ def song_page(song_path: str):
     schema_script = '<script type="application/ld+json">' + json.dumps(schema, ensure_ascii=False).replace("</", "<\\/") + '</script>'
     html = frontend_html()
     html = re.sub(r"<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
-    html = html.replace("</head>", tags + schema_script + "\\n</head>", 1)
+    html = html.replace("</head>", tags + schema_script + "\n</head>", 1)
     return HTMLResponse(content=html)
 
 
