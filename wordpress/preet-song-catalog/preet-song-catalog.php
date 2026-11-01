@@ -315,13 +315,20 @@ function jattbeat_song_media(WP_REST_Request $request) {
     $download_url = is_array($payload) ? esc_url_raw($payload['download_url'] ?? '') : '';
     $api_host = strtolower((string) wp_parse_url(jattbeat_api_base_url(), PHP_URL_HOST));
     $media_host = strtolower((string) wp_parse_url($media_url, PHP_URL_HOST));
+    $media_scheme = strtolower((string) wp_parse_url($media_url, PHP_URL_SCHEME));
     $media_path = (string) wp_parse_url($media_url, PHP_URL_PATH);
+    $download_parts = wp_parse_url($download_url);
 
     if (
         $media_url === '' ||
+        $media_scheme !== 'https' ||
         $media_host !== $api_host ||
         strpos($media_path, '/media/') !== 0 ||
-        strpos($download_url, $media_url . '?download=true') !== 0
+        !is_array($download_parts) ||
+        strtolower($download_parts['scheme'] ?? '') !== 'https' ||
+        strtolower($download_parts['host'] ?? '') !== $api_host ||
+        ($download_parts['path'] ?? '') !== $media_path ||
+        ($download_parts['query'] ?? '') !== 'download=true'
     ) {
         return new WP_Error('jattbeat_invalid_media_url', 'The media service returned an invalid playback address.', ['status' => 502]);
     }
