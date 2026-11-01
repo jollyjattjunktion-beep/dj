@@ -23,6 +23,7 @@ This is a feed-first catalogue importer for a WordPress music-discovery site.
    - `FEED_URL`: the exact authorized feed URL.
    - `SOURCE_ALLOWED_HOSTS`: source domain(s) permitted by the feed agreement.
    - `AUDIO_ALLOWED_HOSTS`: provider domain(s) that authorize embedded/linked playback.
+   - `ARTWORK_ALLOWED_HOSTS`: image host domain(s) whose artwork use is authorized.
    - `WP_BASE_URL`, `WP_USERNAME`, `WP_APP_PASSWORD`: only if connecting WordPress.
 5. Keep `WP_POST_STATUS=draft` during testing.
 6. Confirm `/health` returns `{"ok":true,...}`.
@@ -60,7 +61,9 @@ Invoke-RestMethod -Uri "https://YOUR-SERVICE.onrender.com/api/songs?limit=20"
       "duration": "3:25",
       "source_url": "https://catalog-provider.example/song/001",
       "audio_url": "https://authorized-audio-provider.example/embed/001",
-      "artwork_url": "https://catalog-provider.example/art/001.jpg"
+      "audio_authorized": true,
+      "artwork_url": "https://authorized-artwork-provider.example/art/001.jpg",
+      "artwork_authorized": true
     }
   ]
 }
@@ -69,6 +72,8 @@ Invoke-RestMethod -Uri "https://YOUR-SERVICE.onrender.com/api/songs?limit=20"
 RSS/Atom feeds are also supported. An audio enclosure is recognized only if the feed supplies an audio MIME type.
 
 The exact feed schema must be checked before production use. If the feed uses different field names or nested data, add an explicit adapter rather than guessing.
+
+The importer accepts audio and artwork URLs only when the corresponding item explicitly includes `audio_authorized: true` or `artwork_authorized: true`, and the URL host is present in the matching Render allow-list. These flags are an operator attestation: set them only after confirming the provider's written terms/licence allow the intended external playback or artwork display. A normal DJJOhAL/RSS.app listing does not by itself establish those rights. Until approved provider URLs and permissions are supplied, the API deliberately returns empty media URLs; the frontend should show a neutral artwork placeholder and a disabled/unavailable listen action rather than fabricate assets or a download link.
 
 ## WordPress setup
 
