@@ -505,7 +505,8 @@ def song_page(song_path: str):
         if artist else
         f"Explore {title} on JattBeat. View song details, release information and more Punjabi music."
     )
-    canonical = f"{os.getenv('SITE_URL', 'https://dj-laqb.onrender.com').rstrip('/')}/song/{song_id}-{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')}"
+    song_slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    canonical = f"{os.getenv('SITE_URL', 'https://dj-laqb.onrender.com').rstrip('/')}/song/{song_id}-{song_slug}"
     keywords = [
         title, f"{title} song", f"{title} Punjabi song", artist,
         "Punjabi songs", "Punjabi single track", "latest Punjabi songs",
