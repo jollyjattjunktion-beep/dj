@@ -254,9 +254,9 @@ function jattbeat_catalog_upsert(WP_REST_Request $request) {
         $is_identity = in_array($key, ['catalog_key', 'render_song_id'], true);
         $is_source = $key === 'source_url';
         if ($is_identity || $is_source || !$merge_missing || $current === '') {
-            if ($value !== '' || $is_identity || $is_source) {
-                update_post_meta($post_id, $meta_key, $value);
-            }
+            // Store even empty values so date-sorted queries do not omit songs
+            // that have not yet received a release date.
+            update_post_meta($post_id, $meta_key, $value);
         }
     }
 
