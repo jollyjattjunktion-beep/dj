@@ -467,6 +467,10 @@ def frontend_html():
 def root():
     return HTMLResponse(content=frontend_html())
 
+@app.get("/songs", response_class=HTMLResponse)
+def all_songs_page():
+    return HTMLResponse(content=frontend_html())
+
 
 def seo_escape(value: str) -> str:
     return (str(value or "").replace("&", "&amp;").replace("<", "&lt;")
@@ -674,10 +678,10 @@ async def stream_song_media(token: str, download: bool = False, range_header: st
 
 @app.get("/api/songs")
 def list_songs(limit: int = 50):
-    limit = max(1, min(limit, 100))
+    limit = max(1, min(limit, 500))
     with closing(db()) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
-    if count == 0:
+        total_count = conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
+    if total_count == 0:
         seed_known_catalog_if_empty()
 
     with closing(db()) as conn:
@@ -698,7 +702,7 @@ def list_songs(limit: int = 50):
         item["media_url"] = f"/media/{create_media_token(item['id'])}" if row["audio_url"] else ""
         item["source"] = "JattBeat"
         public_items.append(item)
-    return {"count": len(public_items), "items": public_items}
+    return {"count": total_count, "items": public_items}
 
 
 @app.post("/admin/import")
