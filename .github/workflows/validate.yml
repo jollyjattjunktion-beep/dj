@@ -1,4 +1,4 @@
-name: Validate JattBeat integration
+name: Validate and package JattBeat integration
 
 on:
   push:
@@ -29,3 +29,19 @@ jobs:
           php-version: "8.2"
       - name: Lint WordPress plugin
         run: php -l wordpress/preet-song-catalog/preet-song-catalog.php
+
+  package-wordpress-plugin:
+    needs: [python-syntax, wordpress-plugin-php]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build plugin ZIP
+        run: |
+          mkdir -p dist
+          cd wordpress
+          zip -r ../dist/JattBeat-Song-Catalog.zip preet-song-catalog
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JattBeat-Song-Catalog
+          path: dist/JattBeat-Song-Catalog.zip
+          if-no-files-found: error
