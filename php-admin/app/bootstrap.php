@@ -15,3 +15,25 @@ function admin_required():void{if(empty($_SESSION['admin_id'])){header('Location
 function slugify(string $s):string{$s=iconv('UTF-8','ASCII//TRANSLIT//IGNORE',$s)?:$s;$s=strtolower(trim($s));$s=preg_replace('/[^a-z0-9]+/','-',$s);return trim($s,'-')?:'track';}
 function setting(string $k,string $d=''):string{$q=db()->prepare('SELECT value FROM settings WHERE key=?');$q->execute([$k]);$v=$q->fetchColumn();return $v===false?$d:(string)$v;}
 function save_setting(string $k,string $v):void{$q=db()->prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');$q->execute([$k,$v]);}
+
+function importer_post(string $path,array $payload): array {
+    $base=rtrim(envv('IMPORT_API_URL','https://dj-laqb.onrender.com'),'/');
+    $token=envv('IMPORT_TOKEN','');
+    if($token==='') throw new RuntimeException('Importer is not configured. Add IMPORT_TOKEN to the PHP Render service environment.');
+    $url=$base.$path;
+    $context=stream_context_create(['http'=>[
+        'method'=>'POST',
+        'header'=>"Content-Type: application/json\r\nAccept: application/json\r\nX-Import-Token: ".$token."\r\n",
+        'content'=>json_encode($payload,JSON_UNESCAPED_SLASHES),
+        'timeout'=>180,
+        'ignore_errors'=>true
+    ]]);
+    $body=@file_get_contents($url,false,$context);
+    if($body===false) throw new RuntimeException('Could not connect to the existing JattBeat importer API.');
+    $data=json_decode($body,true);
+    if(!is_array($data)) throw new RuntimeException('Importer API returned an invalid response.');
+    $status=0;
+    foreach(($http_response_header??[]) as $header){if(preg_match('/^HTTP\/\S+\s+(\d+)/',$header,$m))$status=(int)$m[1];}
+    if($status<200||$status>=300) throw new RuntimeException($data['detail']??('Importer API error HTTP '.$status));
+    return $data;
+}
