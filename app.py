@@ -80,10 +80,23 @@ def backfill_known_credits():
         rows = conn.execute("SELECT id, title, artist FROM songs").fetchall()
         for row in rows:
             clean_title, parsed_artist = parse_title_and_artist(row["title"], row["artist"])
+            media = KNOWN_MEDIA.get(clean_title.casefold(), {})
             if parsed_artist:
                 conn.execute(
-                    "UPDATE songs SET title=?, artist=? WHERE id=?",
-                    (clean_title, parsed_artist, row["id"]),
+                    """UPDATE songs SET title=?, artist=?,
+                       artwork_url=CASE WHEN ? != '' THEN ? ELSE artwork_url END,
+                       audio_url=CASE WHEN ? != '' THEN ? ELSE audio_url END,
+                       duration=CASE WHEN ? != '' THEN ? ELSE duration END,
+                       label=CASE WHEN ? != '' THEN ? ELSE label END
+                       WHERE id=?""",
+                    (
+                        clean_title, parsed_artist,
+                        media.get("artwork_url", ""), media.get("artwork_url", ""),
+                        media.get("audio_url", ""), media.get("audio_url", ""),
+                        media.get("duration", ""), media.get("duration", ""),
+                        media.get("label", ""), media.get("label", ""),
+                        row["id"],
+                    ),
                 )
         conn.commit()
 
@@ -136,6 +149,57 @@ KNOWN_CREDITS = {
     "das jandi": ("Das Jandi", "Sembhy K"),
     "low cars": ("Low Cars", "Karman"),
     "who jatt": ("Who Jatt", "Gur Sohal"),
+}
+
+# Direct provider-hosted media URLs, populated after the site operator confirmed
+# permission to use DJJOhAL-hosted cover artwork and 320 KBPS MP3 links.
+# These are external links only; this application does not download or proxy files.
+KNOWN_MEDIA = {
+    "karwa chauth": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738525/Karwa%20Chauth.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529469/Karwa%20Chauth%20-%20Jesann%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:14", "label": "UI Films",
+    },
+    "on me": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738526/On%20Me.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529470/On%20Me%20-%20Manni%20Virdi%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:13", "label": "Trap-V Records",
+    },
+    "for my bae": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738611/For%20My%20Bae.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529562/For%20My%20Bae%20-%20Ajay%20Amiwalia%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:21", "label": "Ajay Amiwalia Music",
+    },
+    "hoshiarpur anthem": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738524/Hoshiarpur%20Anthem.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529468/Hoshiarpur%20Anthem%20-%20Ranjha%20Chagran%20Wala%20%28DJJOhAL.Com%29.mp3",
+        "duration": "03:32", "label": "Ranjha Chagran Wala Music",
+    },
+    "six sunday": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738539/Six%20Sunday.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529487/Six%20Sunday%20-%20Yuvraj%20Goraya%2C%20Shetu%20Katal%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:11", "label": "Yuvraj Goraya Music",
+    },
+    "kabool ae": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738540/Kabool%20Ae.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529488/Kabool%20Ae%20-%20Deep%20Sukh%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:26", "label": "Motion RootZ Studios",
+    },
+    "das jandi": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738502/Das%20Jandi.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529427/Das%20Jandi%20-%20Sembhy%20K%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:54", "label": "Raula Records",
+    },
+    "low cars": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738505/Low%20Cars.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529430/Low%20Cars%20-%20Karman%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:33", "label": "Karman Records",
+    },
+    "who jatt": {
+        "artwork_url": "https://lq.djjohal.com/covers_webp/738507/Who%20Jatt.webp",
+        "audio_url": "https://hd1.djjohal.com/320/529432/Who%20Jatt%20-%20Gur%20Sohal%20%28DJJOhAL.Com%29.mp3",
+        "duration": "02:05", "label": "Rhythm & Flow",
+    },
 }
 
 
