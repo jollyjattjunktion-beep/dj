@@ -29,6 +29,7 @@ Create these WordPress pages:
 |---|---|---|
 | Home | `home` (or your preferred home slug) | `[jattbeat_homepage]` |
 | Songs | `songs` | `[jattbeat_all_songs]` |
+| Artists | `artists` | `[jattbeat_artists]` |
 
 Set the Home page as the static front page under Settings → Reading. Keep the Song post URLs under `/song/<song-name>/`. The plugin uses 15 songs per page and a mobile-responsive JattBeat black/charcoal/red layout.
 
