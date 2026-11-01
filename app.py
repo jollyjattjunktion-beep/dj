@@ -25,7 +25,6 @@ FEED_FORMAT = os.getenv("FEED_FORMAT", "auto").lower()
 IMPORT_TOKEN = os.getenv("IMPORT_TOKEN", "")
 MEDIA_TOKEN_SECRET = (os.getenv("MEDIA_TOKEN_SECRET") or IMPORT_TOKEN or secrets.token_urlsafe(48)).encode("utf-8")
 MEDIA_TOKEN_TTL = max(300, int(os.getenv("MEDIA_TOKEN_TTL", "3600")))
-MEDIA_HOSTS = {"hd1.djjohal.com"} | AUDIO_ALLOWED_HOSTS
 WP_BASE_URL = os.getenv("WP_BASE_URL", "").rstrip("/")
 WP_USERNAME = os.getenv("WP_USERNAME", "")
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
@@ -35,6 +34,8 @@ AUDIO_ALLOWED_HOSTS = {
     for h in os.getenv("AUDIO_ALLOWED_HOSTS", "").split(",")
     if h.strip()
 }
+
+MEDIA_HOSTS = {"hd1.djjohal.com"} | AUDIO_ALLOWED_HOSTS
 SOURCE_ALLOWED_HOSTS = {
     h.strip().lower()
     for h in os.getenv("SOURCE_ALLOWED_HOSTS", "").split(",")
