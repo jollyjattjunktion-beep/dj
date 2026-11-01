@@ -555,6 +555,32 @@ def song_page(song_path: str):
     html = frontend_html()
     html = re.sub(r"<title>.*?</title>", "", html, count=1, flags=re.I | re.S)
     html = html.replace("</head>", tags + schema_script + "\n</head>", 1)
+
+    # Put song-specific text in the initial HTML response as well as in the
+    # browser-side renderer, so crawlers can read the page without JS execution.
+    html = html.replace('<section class="home" id="homeView">', '<section class="home hidden" id="homeView">', 1)
+    html = html.replace('<section class="detail" id="detailView">', '<section class="detail active" id="detailView">', 1)
+    html = html.replace('<span id="crumbTitle">Song</span>', f'<span id="crumbTitle">{seo_escape(title)}</span>', 1)
+    html = html.replace('<h1 class="detail-title" id="detailTitle">Song title</h1>', f'<h1 class="detail-title" id="detailTitle">{seo_escape(title)}</h1>', 1)
+    html = html.replace('<span id="detailArtist">Artist</span>', f'<span id="detailArtist">{seo_escape(artist)}</span>', 1)
+    release_display = str(song["release_date"] or "Not provided")[:10]
+    html = html.replace('<span id="detailDate">Release date unavailable</span>', f'<span id="detailDate">{seo_escape(release_display)}</span>', 1)
+    if image_url:
+        html = html.replace('id="detailCover" class="detail-cover" alt="Song cover artwork"', f'id="detailCover" class="detail-cover" src="{seo_escape(image_url)}" alt="{seo_escape(title)} cover artwork"', 1)
+    info_values = [
+        ("Song Title", title), ("Singer", artist or "Not provided"),
+        ("Source", "JattBeat"), ("Release Date", release_display),
+        ("Language", "Punjabi"), ("Duration", str(song["duration"] or "Not provided")),
+        ("Music Label", str(song["label"] or "Not provided")),
+    ]
+    info_html = "".join(
+        f'<div class="info-row"><span>{seo_escape(key)}</span><strong>{seo_escape(value)}</strong></div>'
+        for key, value in info_values
+    )
+    html = html.replace('<div class="info-card" id="detailInfo"></div>', f'<div class="info-card" id="detailInfo">{info_html}</div>', 1)
+    about = f"{title} is a Punjabi single by {artist}. Released on {release_display}, the track has a duration of {song['duration'] or 'not listed'} and is listed under {song['label'] or 'an unlisted music label'}. Explore more Punjabi music on JattBeat."
+    html = html.replace('<p class="about" id="detailAbout"></p>', f'<p class="about" id="detailAbout">{seo_escape(about)}</p>', 1)
+    html = html.replace('<span id="faqTitle"></span>', seo_escape(title), 1)
     return HTMLResponse(content=html)
 
 
