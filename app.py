@@ -304,6 +304,7 @@ def normalize_entry(entry):
         field(entry, "source_url", "link", "url"),
         SOURCE_ALLOWED_HOSTS,
         required=True,
+        require_allowlist=True,
     )
     # Media URLs are accepted only when the feed explicitly marks the relevant
     # permission as verified and the host is allow-listed by the site operator.
@@ -321,7 +322,9 @@ def normalize_entry(entry):
         raise ValueError("Feed item has no title")
 
     external_id = clean(field(entry, "id", "guid", "external_id"))
-    stable = external_id or f"{title.casefold()}|{artist.casefold()}"
+    # Prefer a provider/feed ID, then the canonical source URL. A corrected
+    # artist spelling must not turn the same source page into a new song.
+    stable = external_id or source.rstrip("/").lower() or f"{title.casefold()}|{artist.casefold()}"
     fingerprint = hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
     return {
@@ -848,14 +851,17 @@ def import_feed(x_import_token: str = Header(default="")):
                 song = normalize_entry(entry)
                 with closing(db()) as conn:
                     existing = conn.execute(
-                        "SELECT id FROM songs WHERE fingerprint=?",
-                        (song["fingerprint"],),
+                        "SELECT id FROM songs WHERE fingerprint=? OR source_url=? OR (external_id=? AND ? != '')",
+                        (
+                            song["fingerprint"], song["source_url"],
+                            song["external_id"], song["external_id"],
+                        ),
                     ).fetchone()
                     if existing:
                         # Keep the Render row ID stable so the matching WP post
                         # can be updated instead of creating another post.
                         conn.execute(
-                            """UPDATE songs SET title=?, artist=?,
+                            """UPDATE songs SET fingerprint=?, title=?, artist=?,
                                album=CASE WHEN ? != '' THEN ? ELSE album END,
                                label=CASE WHEN ? != '' THEN ? ELSE label END,
                                release_date=CASE WHEN ? != '' THEN ? ELSE release_date END,
@@ -865,7 +871,7 @@ def import_feed(x_import_token: str = Header(default="")):
                                artwork_url=CASE WHEN ? != '' THEN ? ELSE artwork_url END
                                WHERE fingerprint=?""",
                             (
-                                song["title"], song["artist"],
+                                song["fingerprint"], song["title"], song["artist"],
                                 song["album"], song["album"],
                                 song["label"], song["label"],
                                 song["release_date"], song["release_date"],
