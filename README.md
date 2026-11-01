@@ -142,3 +142,13 @@ A feed or catalogue page is not automatically permission to republish its artwor
 ## Optional PHP + SQLite admin panel
 
 A separate PHP music-admin service has been added under `php-admin/`. It does not replace the existing FastAPI service or WordPress catalogue, and it currently maintains its own SQLite catalogue without automatic WordPress synchronization. To deploy it, create a second Render Web Service from this same repository with Root Directory `php-admin`, Runtime Docker, Dockerfile Path `Dockerfile`, Docker Context `.`, health check `/health`, and a paid persistent disk mounted at `/var/data`. Full setup instructions and feature limits are in [php-admin/README.md](php-admin/README.md).
+
+### Bulk import from the PHP admin
+
+The PHP admin now includes **Admin → Bulk Importer**, a server-side bridge to the existing Python importer in `app.py`. It accepts up to 20 approved Single Track category URLs per batch and reuses the existing duplicate detection and optional WordPress sync.
+
+Configure these environment variables on the separate PHP admin Render service:
+- `IMPORT_API_URL=https://dj-laqb.onrender.com`
+- `IMPORT_TOKEN` = the same secret value as `IMPORT_TOKEN` on the Python API Render service.
+
+The secret stays server-side and is never sent to the browser. Imported rows are saved by the Python API and can sync to WordPress when its credentials are configured on the API service. The PHP admin's own SQLite song table is currently separate; WordPress remains the canonical public catalogue. See [php-admin/README.md](php-admin/README.md) for the deployment steps and limitation.
