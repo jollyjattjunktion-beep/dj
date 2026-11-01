@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import feedparser
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException\nfrom fastapi.responses import FileResponse
 
 APP_NAME = "Preet Music Portal API"
 DB_PATH = os.getenv("DB_PATH", "/tmp/preet_music_portal.sqlite3")
@@ -396,12 +396,13 @@ def wp_sync(song):
 
 @app.get("/")
 def root():
-    return {
-        "service": APP_NAME,
-        "version": "0.1.0",
-        "health": "/health",
-        "docs": "/docs",
-    }
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+
+
+@app.get("/song/{song_path}")
+def song_page(song_path: str):
+    # The frontend resolves the song from the live catalogue API.
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
 
 
 @app.get("/health")
