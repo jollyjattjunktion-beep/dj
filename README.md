@@ -1,95 +1,138 @@
-# Preet Music Portal — Render MVP
+# JattBeat — WordPress catalogue + Render importer/media API
 
-This is a feed-first catalogue importer for a WordPress music-discovery site.
+WordPress on `https://jattbeat.com` is the **main song catalogue and public website**. The Render FastAPI service remains the trusted import worker and approved-media token service. Its SQLite database is retained as an import/index and media-origin mapping store; the WordPress Song custom post type is the public catalogue of record.
 
-## Scope and safeguards
+## Architecture
 
-- Reads an **authorized RSS/Atom or JSON feed**. It does not crawl DJJOhAL HTML pages.
-- Imports metadata and creates WordPress **drafts** by default.
-- Uses a stable feed ID (or normalized title + artist) for duplicate prevention.
-- Accepts only HTTPS URLs and supports source/audio host allow-lists.
-- Does not download, proxy, cache, or store MP3 files.
-- Does not remove copyright/provenance metadata.
-- Uses provider-hosted streaming links only when the feed/provider authorizes that use.
-- Does not copy cover artwork; it stores the URL as reference metadata.
-- SEO summary is generated from factual fields, not copied/reworded feed descriptions.
+- **WordPress:** song posts, artist/title/release metadata, public song URLs, homepage, all-songs page and SEO fields.
+- **JattBeat Song Catalog plugin:** `wordpress/preet-song-catalog/`. Registers the Song post type, the dark black/red JattBeat storefront shortcodes, authenticated WordPress upsert API, and a server-side media bridge.
+- **Render API:** imports feed entries, deduplicates Render records, syncs new and changed records into WordPress, and issues short-lived signed media URLs. It never sends the raw provider audio URL to WordPress.
+- **Persistent Render disk:** keeps the import index stable between deployments. Do not remove the disk or change `DB_PATH` without a planned database migration.
 
-## Deploy to Render
+## 1. Install the WordPress plugin
 
-1. Push this folder to a new GitHub repository.
-2. In Render, choose **New → Blueprint** and select the repository.
-3. Render reads `render.yaml`; create the service.
-4. In the service Environment page, set:
-   - `FEED_URL`: the exact authorized feed URL.
-   - `SOURCE_ALLOWED_HOSTS`: source domain(s) permitted by the feed agreement.
-   - `AUDIO_ALLOWED_HOSTS`: provider domain(s) that authorize embedded/linked playback.
-   - `ARTWORK_ALLOWED_HOSTS`: image host domain(s) whose artwork use is authorized.
-   - `WP_BASE_URL`, `WP_USERNAME`, `WP_APP_PASSWORD`: only if connecting WordPress.
-5. Keep `WP_POST_STATUS=draft` during testing.
-6. Confirm `/health` returns `{"ok":true,...}`.
+Copy the complete folder `wordpress/preet-song-catalog/` into:
 
-The Render blueprint creates a persistent disk for SQLite. Do not remove it while relying on the database for deduplication.
+```text
+wp-content/plugins/preet-song-catalog/
+```
 
-## Test endpoints
+The folder must contain `preet-song-catalog.php` directly. Activate **JattBeat Song Catalog** in WordPress → Plugins, then visit Settings → Permalinks and click **Save Changes** once.
 
-- `GET /health` — health check.
-- `GET /api/songs?limit=20` — imported catalogue records.
-- `POST /admin/import` — import up to 100 feed entries.
+The plugin defaults its Render API URL to `https://dj-laqb.onrender.com`. It can be changed in WordPress → Settings → JattBeat Catalog.
 
-PowerShell test:
+### Create the public pages
+
+Create these WordPress pages:
+
+| Page | Slug | Page content |
+|---|---|---|
+| Home | `home` (or your preferred home slug) | `[jattbeat_homepage]` |
+| Songs | `songs` | `[jattbeat_all_songs]` |
+
+Set the Home page as the static front page under Settings → Reading. Keep the Song post URLs under `/song/<song-name>/`. The plugin uses 15 songs per page and a mobile-responsive JattBeat black/charcoal/red layout.
+
+The older `[preet_song_catalog]` shortcode remains as a compatibility alias for the all-songs listing.
+
+## 2. Create WordPress importer credentials
+
+Create a dedicated WordPress user with the **Editor** role (or another role allowed to edit Song posts). Generate an Application Password from that user's profile. Use the Application Password, not the normal login password.
+
+In Render → your API service → Environment, set:
+
+| Variable | Value |
+|---|---|
+| `WP_BASE_URL` | `https://jattbeat.com` |
+| `WP_USERNAME` | Dedicated importer username |
+| `WP_APP_PASSWORD` | WordPress Application Password (spaces may be included) |
+| `WP_POST_STATUS` | `draft` during migration/review |
+| `PUBLIC_API_BASE_URL` | `https://dj-laqb.onrender.com` |
+| `MEDIA_TOKEN_SECRET` | Long random secret; keep stable across restarts/deploys |
+
+Do not put Application Passwords or the import token in WordPress page content, JavaScript, GitHub, or screenshots.
+
+The Render blueprint generates `IMPORT_TOKEN` and `MEDIA_TOKEN_SECRET` if it creates the service. For an existing Render service, confirm these values exist in its Environment page. In particular, set a stable `MEDIA_TOKEN_SECRET`; changing it invalidates previously issued media links, which is expected for short-lived links but should not happen on every restart.
+
+Keep `DB_PATH=/var/data/catalog.sqlite3` on the Render persistent disk configured in `render.yaml`.
+
+## 3. Safely backfill the existing Render songs into WordPress
+
+After deploying the updated Render code and setting the WordPress variables, call the protected backfill endpoint. It syncs existing Render rows into WordPress in batches and is safe to repeat.
+
+PowerShell:
 
 ```powershell
 $headers = @{ "X-Import-Token" = "YOUR_RENDER_IMPORT_TOKEN" }
-Invoke-RestMethod -Method Post -Uri "https://YOUR-SERVICE.onrender.com/admin/import" -Headers $headers
-Invoke-RestMethod -Uri "https://YOUR-SERVICE.onrender.com/api/songs?limit=20"
+Invoke-RestMethod -Method Post `
+  -Uri "https://dj-laqb.onrender.com/admin/sync-wordpress?limit=200&offset=0" `
+  -Headers $headers
 ```
 
-## Feed formats
+The response reports `scanned`, `synced`, `errors` and `next_offset`. If `next_offset` is a number, call the endpoint again with that offset.
 
-### JSON example
+### Duplicate and edit protection
 
-```json
-{
-  "items": [
-    {
-      "id": "provider-track-001",
-      "title": "Example Track",
-      "artist": "Example Artist",
-      "album": "Example Album",
-      "label": "Example Label",
-      "release_date": "2026-11-01",
-      "duration": "3:25",
-      "source_url": "https://catalog-provider.example/song/001",
-      "audio_url": "https://authorized-audio-provider.example/embed/001",
-      "audio_authorized": true,
-      "artwork_url": "https://authorized-artwork-provider.example/art/001.jpg",
-      "artwork_authorized": true
-    }
-  ]
-}
+- WordPress records are matched by a stable key `render:<Render song row ID>`.
+- The importer also checks legacy external IDs and legacy title/artist slugs before creating a post.
+- Re-imports update the same WordPress post; they do not create a new post for the same Render row.
+- Backfill and routine imports fill missing WordPress metadata but preserve existing manually entered title, artist and other non-empty catalogue fields.
+- Existing post status is retained. New posts are created as drafts by default.
+- A failed WordPress sync does not discard the Render import. Run the backfill endpoint again after fixing the connection.
+
+Review the drafts in WordPress → Songs, correct any metadata as needed, then publish approved records. Keep `WP_POST_STATUS=draft` while testing.
+
+## 4. Import new catalogue entries
+
+The standard importer remains:
+
+- `POST /admin/import` — imports up to 100 entries from the configured authorized RSS/Atom or JSON feed.
+- `POST /admin/import-pages` — legacy page-import compatibility route. Only use it where the source's terms and your rights/authorization permit automated retrieval. The feed importer is the preferred production path.
+
+New entries are written to the Render import index, then upserted into WordPress. Existing entries are refreshed and re-synced to the same WordPress post.
+
+Feed import PowerShell:
+
+```powershell
+$headers = @{ "X-Import-Token" = "YOUR_RENDER_IMPORT_TOKEN" }
+Invoke-RestMethod -Method Post -Uri "https://dj-laqb.onrender.com/admin/import" -Headers $headers
 ```
 
-RSS/Atom feeds are also supported. An audio enclosure is recognized only if the feed supplies an audio MIME type.
+## 5. Authorized playback and downloads
 
-The exact feed schema must be checked before production use. If the feed uses different field names or nested data, add an explicit adapter rather than guessing.
+WordPress stores the Render song row ID, artwork reference and source/rights attribution. It does **not** store the provider's raw MP3 URL.
 
-The importer accepts audio and artwork URLs only when the corresponding item explicitly includes `audio_authorized: true` or `artwork_authorized: true`, and the URL host is present in the matching Render allow-list. These flags are an operator attestation: set them only after confirming the provider's written terms/licence allow the intended external playback or artwork display.
+When a visitor presses Play or Download on a published song page:
 
-The public song API does not return raw source-page URLs or MP3 URLs. Instead it returns a short-lived signed `media_url` such as `/media/<token>`. The backend validates the HMAC token and streams the approved audio provider response, including byte-range requests for seeking. Add a dedicated random `MEDIA_TOKEN_SECRET` in Render for stable token signing across deploys/instances; otherwise the API falls back to `IMPORT_TOKEN`. The download button uses the same token endpoint with `?download=true`. This hides the origin URL from normal page/API output, but it is not DRM: a visitor with access to the player can still record the audio, and token links can be shared until expiry.
+1. The WordPress plugin checks that the Song post is published.
+2. The plugin server-side requests `GET /api/songs/{render_song_id}` from Render.
+3. Render creates a short-lived HMAC-signed `/media/<token>` link.
+4. The browser receives only that approved token URL. The original provider URL remains on the Render side.
 
-## WordPress setup
+The Render API routes are:
 
-1. Upload and activate `wordpress/preet-song-catalog/`.
-2. Save **Settings → Permalinks** once.
-3. Create a WordPress Application Password for a dedicated importer account.
-4. Set the WordPress environment variables on Render.
-5. Test import with `WP_POST_STATUS=draft`.
-6. Review each draft before publishing.
+- `GET /api/songs?limit=20` — public catalogue/API compatibility.
+- `GET /api/songs/{id}` — song metadata plus a newly minted media/download URL.
+- `GET /media/{token}` — streams the approved provider URL and supports byte-range playback.
+- `POST /admin/sync-wordpress` — protected, repeatable WordPress backfill.
+- `GET /health` — service health.
 
-## Streaming behavior
+The media token is not DRM and cannot stop recording or re-sharing by a person who can play the file. Keep attribution and required rights-holder credits intact. Only populate the audio allow-list and authorization flags after confirming the intended use is permitted by the relevant provider/rightsholder.
 
-This MVP stores the provider's authorized playback/embed URL and presents it as an external provider link. It deliberately does not disguise or proxy the provider URL. A tokenized first-party route cannot make a third-party media URL secret once a browser plays it. Provider-specific iframe embeds can be added after the provider and its embed policy are identified.
+## 6. Deployment and persistence
 
-## Important
+- GitHub is for versioned code and the plugin.
+- Render deploys `app.py` and retains its SQLite file on the persistent disk.
+- WordPress holds the canonical song posts and their editorial metadata in its own MariaDB database.
+- WordPress theme/plugin updates must not replace `wp-content/uploads` or the WordPress database.
+- Render deployments must not remove the persistent disk.
 
-A feed endpoint is not automatically a licence to republish every field or stream every audio item. Confirm the feed terms and each audio provider's embedding/distribution permission. Keep attribution and rights-holder credits intact.
+Useful checks:
+
+- `https://dj-laqb.onrender.com/health`
+- `https://dj-laqb.onrender.com/api/songs?limit=5`
+- `https://jattbeat.com/wp-json/wp/v2/songs` (public published Song records)
+- `https://jattbeat.com/wp-json/jattbeat/v1/media/<wordpress-post-id>` (only published songs with a linked Render row)
+
+## Rights and metadata
+
+A feed or catalogue page is not automatically permission to republish its artwork or stream its audio. Keep the actual artist, label, source and required rights-holder credits. The importer accepts provider media only when it is explicitly marked as authorized and hosted on a configured allowed host.
