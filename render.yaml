@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: preet-music-portal-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DB_PATH
+        value: /var/data/catalog.sqlite3
+      - key: FEED_FORMAT
+        value: auto
+      - key: WP_POST_STATUS
+        value: draft
+      - key: IMPORT_TOKEN
+        generateValue: true
+    disk:
+      name: music-catalog-data
+      mountPath: /var/data
+      sizeGB: 1
