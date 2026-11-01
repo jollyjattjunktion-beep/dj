@@ -689,8 +689,10 @@ def list_songs(limit: int = 50):
             """SELECT id,title,artist,album,label,release_date,duration,
                       source_url,audio_url,artwork_url,wordpress_url
                FROM songs
-               ORDER BY CASE WHEN release_date IS NULL OR release_date = '' THEN 1 ELSE 0 END,
-                        release_date DESC, id DESC
+               ORDER BY CASE WHEN release_date IS NULL OR TRIM(release_date) = '' THEN 1 ELSE 0 END,
+                        release_date DESC,
+                        CASE WHEN release_date IS NULL OR TRIM(release_date) = '' THEN id END ASC,
+                        CASE WHEN release_date IS NOT NULL AND TRIM(release_date) != '' THEN id END DESC
                LIMIT ?""",
             (limit,),
         ).fetchall()
