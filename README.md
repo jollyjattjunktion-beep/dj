@@ -73,7 +73,9 @@ RSS/Atom feeds are also supported. An audio enclosure is recognized only if the 
 
 The exact feed schema must be checked before production use. If the feed uses different field names or nested data, add an explicit adapter rather than guessing.
 
-The importer accepts audio and artwork URLs only when the corresponding item explicitly includes `audio_authorized: true` or `artwork_authorized: true`, and the URL host is present in the matching Render allow-list. These flags are an operator attestation: set them only after confirming the provider's written terms/licence allow the intended external playback or artwork display. A normal DJJOhAL/RSS.app listing does not by itself establish those rights. Until approved provider URLs and permissions are supplied, the API deliberately returns empty media URLs; the frontend should show a neutral artwork placeholder and a disabled/unavailable listen action rather than fabricate assets or a download link.
+The importer accepts audio and artwork URLs only when the corresponding item explicitly includes `audio_authorized: true` or `artwork_authorized: true`, and the URL host is present in the matching Render allow-list. These flags are an operator attestation: set them only after confirming the provider's written terms/licence allow the intended external playback or artwork display.
+
+The public song API does not return raw source-page URLs or MP3 URLs. Instead it returns a short-lived signed `media_url` such as `/media/<token>`. The backend validates the HMAC token and streams the approved audio provider response, including byte-range requests for seeking. Add a dedicated random `MEDIA_TOKEN_SECRET` in Render for stable token signing across deploys/instances; otherwise the API falls back to `IMPORT_TOKEN`. The download button uses the same token endpoint with `?download=true`. This hides the origin URL from normal page/API output, but it is not DRM: a visitor with access to the player can still record the audio, and token links can be shared until expiry.
 
 ## WordPress setup
 
