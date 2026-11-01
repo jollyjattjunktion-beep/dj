@@ -1,0 +1,5 @@
+Options -Indexes
+RewriteEngine On
+RewriteRule ^health$ health.php [L]
+RewriteRule ^sitemap\.xml$ sitemap.php [L]
+RewriteRule ^song/([a-zA-Z0-9-]+)/?$ index.php?song=$1 [QSA,L]
