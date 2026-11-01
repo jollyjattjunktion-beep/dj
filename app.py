@@ -277,7 +277,8 @@ def parse_title_and_artist(raw_title, supplied_artist=""):
     # Parse only an explicit, unambiguous "Song Title - Artist" / "Song Title | Artist".
     for separator in (" - ", " | "):
         if separator in title:
-            left, right = title.rsplit(separator, 1)            if left.strip() and right.strip():
+            left, right = title.rsplit(separator, 1)
+            if left.strip() and right.strip():
                 return left.strip(), right.strip()
 
     # Do not guess artist names from arbitrary trailing words.
