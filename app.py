@@ -869,7 +869,7 @@ def import_feed(x_import_token: str = Header(default="")):
                                source_url=?,
                                audio_url=CASE WHEN ? != '' THEN ? ELSE audio_url END,
                                artwork_url=CASE WHEN ? != '' THEN ? ELSE artwork_url END
-                               WHERE fingerprint=?""",
+                               WHERE id=?""",
                             (
                                 song["fingerprint"], song["title"], song["artist"],
                                 song["album"], song["album"],
@@ -879,7 +879,7 @@ def import_feed(x_import_token: str = Header(default="")):
                                 song["source_url"],
                                 song["audio_url"], song["audio_url"],
                                 song["artwork_url"], song["artwork_url"],
-                                song["fingerprint"],
+                                existing["id"],
                             ),
                         )
                         render_song_id = int(existing["id"])
