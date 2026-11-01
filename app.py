@@ -1,24 +1,31 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
+import time
 from urllib.parse import urlparse
 
 import feedparser
 import httpx
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 APP_NAME = "Preet Music Portal API"
 DB_PATH = os.getenv("DB_PATH", "/tmp/preet_music_portal.sqlite3")
 FEED_URL = os.getenv("FEED_URL", "").strip()
 FEED_FORMAT = os.getenv("FEED_FORMAT", "auto").lower()
 IMPORT_TOKEN = os.getenv("IMPORT_TOKEN", "")
+MEDIA_TOKEN_SECRET = (os.getenv("MEDIA_TOKEN_SECRET") or IMPORT_TOKEN or secrets.token_urlsafe(48)).encode("utf-8")
+MEDIA_TOKEN_TTL = max(300, int(os.getenv("MEDIA_TOKEN_TTL", "3600")))
+MEDIA_HOSTS = {"hd1.djjohal.com"} | AUDIO_ALLOWED_HOSTS
 WP_BASE_URL = os.getenv("WP_BASE_URL", "").rstrip("/")
 WP_USERNAME = os.getenv("WP_USERNAME", "")
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
@@ -475,6 +482,86 @@ def health():
     }
 
 
+
+def create_media_token(song_id: int) -> str:
+    expires = int(time.time()) + MEDIA_TOKEN_TTL
+    payload = f"{int(song_id)}.{expires}"
+    signature = hmac.new(MEDIA_TOKEN_SECRET, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{encoded}.{signature}"
+
+
+def verify_media_token(token: str):
+    try:
+        encoded, supplied_signature = token.rsplit(".", 1)
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        song_id_text, expires_text = payload.split(".", 1)
+        song_id, expires = int(song_id_text), int(expires_text)
+        expected = hmac.new(
+            MEDIA_TOKEN_SECRET, payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(supplied_signature, expected):
+            return None
+        if expires < int(time.time()):
+            return None
+        return song_id
+    except (ValueError, TypeError, UnicodeError):
+        return None
+
+
+@app.get("/media/{token}")
+async def stream_song_media(token: str, download: bool = False, range_header: str = Header(default="", alias="Range")):
+    song_id = verify_media_token(token)
+    if song_id is None:
+        raise HTTPException(status_code=403, detail="This media link is invalid or has expired. Refresh the song page.")
+
+    with closing(db()) as conn:
+        song = conn.execute("SELECT title, audio_url FROM songs WHERE id=?", (song_id,)).fetchone()
+    if not song or not song["audio_url"]:
+        raise HTTPException(status_code=404, detail="Audio is not available for this song.")
+
+    media_url = song["audio_url"]
+    parsed = urlparse(media_url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in MEDIA_HOSTS:
+        raise HTTPException(status_code=403, detail="This media provider is not approved.")
+
+    client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+    request_headers = {"User-Agent": USER_AGENT}
+    if range_header:
+        request_headers["Range"] = range_header
+    try:
+        upstream_request = client.build_request("GET", media_url, headers=request_headers)
+        upstream = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="The audio provider is temporarily unavailable.")
+
+    if upstream.status_code not in (200, 206):
+        status_code = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Audio provider returned status {status_code}.")
+
+    response_headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+    for header in ("content-length", "content-range", "accept-ranges"):
+        if header in upstream.headers:
+            response_headers[header.title()] = upstream.headers[header]
+    filename = re.sub(r"[^A-Za-z0-9 _-]", "", song["title"] or "JattBeat Song").strip() or "JattBeat Song"
+    disposition = "attachment" if download else "inline"
+    response_headers["Content-Disposition"] = f'{disposition}; filename="{filename}.mp3"'
+    content_type = upstream.headers.get("content-type", "audio/mpeg")
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(relay(), status_code=upstream.status_code, headers=response_headers, media_type=content_type)
+
 @app.get("/api/songs")
 def list_songs(limit: int = 50):
     limit = max(1, min(limit, 100))
@@ -490,7 +577,15 @@ def list_songs(limit: int = 50):
                FROM songs ORDER BY id DESC LIMIT ?""",
             (limit,),
         ).fetchall()
-    return {"count": len(rows), "items": [dict(row) for row in rows]}
+    public_items = []
+    for row in rows:
+        item = dict(row)
+        item.pop("source_url", None)
+        item.pop("audio_url", None)
+        item["media_url"] = f"/media/{create_media_token(item['id'])}" if row["audio_url"] else ""
+        item["source"] = "JattBeat"
+        public_items.append(item)
+    return {"count": len(public_items), "items": public_items}
 
 
 @app.post("/admin/import")
