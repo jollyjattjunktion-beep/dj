@@ -29,11 +29,25 @@ function importer_post(string $path,array $payload): array {
         'ignore_errors'=>true
     ]]);
     $body=@file_get_contents($url,false,$context);
-    if($body===false) throw new RuntimeException('Could not connect to the existing JattBeat importer API.');
-    $data=json_decode($body,true);
-    if(!is_array($data)) throw new RuntimeException('Importer API returned an invalid response.');
+    $headers=$http_response_header??[];
+    if($body===false) {
+        $last=error_get_last();
+        throw new RuntimeException('Could not connect to importer API at '.$url.'. '.($last['message']??'Network request failed'));
+    }
     $status=0;
-    foreach(($http_response_header??[]) as $header){if(preg_match('/^HTTP\/\S+\s+(\d+)/',$header,$m))$status=(int)$m[1];}
-    if($status<200||$status>=300) throw new RuntimeException($data['detail']??('Importer API error HTTP '.$status));
+    $contentType='missing';
+    foreach($headers as $header) {
+        if(preg_match('/^HTTP\/\S+\s+(\d+)/',$header,$m)) $status=(int)$m[1];
+        if(stripos($header,'Content-Type:')===0) $contentType=trim(substr($header,13));
+    }
+    $data=json_decode($body,true);
+    if(!is_array($data)) {
+        $excerpt=trim(preg_replace('/\s+/',' ',strip_tags($body)));
+        throw new RuntimeException('Importer returned non-JSON. HTTP '.$status.'; content-type='.$contentType.'; response='.substr($excerpt?:'[empty response]',0,350));
+    }
+    if($status<200||$status>=300) {
+        $detail=$data['detail']??$data['message']??json_encode($data);
+        throw new RuntimeException('Importer API HTTP '.$status.': '.substr((string)$detail,0,350));
+    }
     return $data;
 }
