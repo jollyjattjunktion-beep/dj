@@ -177,7 +177,7 @@ def clean(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def safe_url(value, allowed_hosts, required=False):
+def safe_url(value, allowed_hosts, required=False, require_allowlist=False):
     value = clean(value)
     if not value:
         if required:
@@ -186,6 +186,8 @@ def safe_url(value, allowed_hosts, required=False):
     parsed = urlparse(value)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("Only HTTPS URLs are accepted")
+    if require_allowlist and not allowed_hosts:
+        raise ValueError("Configure the matching host allow-list before importing media")
     if allowed_hosts and parsed.hostname.lower() not in allowed_hosts:
         raise ValueError(f"Host is not allow-listed: {parsed.hostname}")
     return value
@@ -308,10 +310,12 @@ def normalize_entry(entry):
     audio = safe_url(
         field(entry, "audio_url", "stream_url", "enclosure_url"),
         AUDIO_ALLOWED_HOSTS,
+        require_allowlist=True,
     ) if explicitly_authorized(entry, "audio_authorized") else ""
     artwork = safe_url(
         field(entry, "artwork_url", "image", "cover", "image_url"),
         ARTWORK_ALLOWED_HOSTS,
+        require_allowlist=True,
     ) if explicitly_authorized(entry, "artwork_authorized") else ""
     if not title:
         raise ValueError("Feed item has no title")
@@ -1003,7 +1007,7 @@ def _extract_older_song(detail_html, source_url):
     for candidate in parser.media_links + parser.links:
         candidate = urljoin(source_url, candidate)
         p = urlparse(candidate)
-        if p.scheme == "https" and (p.hostname or "").lower() in MEDIA_HOSTS and p.path.lower().endswith(".mp3"):
+        if p.scheme == "https" and (p.hostname or "").lower() in AUDIO_ALLOWED_HOSTS and p.path.lower().endswith(".mp3"):
             audio = candidate
             break
     duration = clean(meta.get("music:duration") or meta.get("duration"))
@@ -1027,7 +1031,7 @@ def _extract_older_song(detail_html, source_url):
     if not title: raise ValueError("Song title could not be read from detail page")
     if artwork:
         p = urlparse(artwork)
-        if p.scheme != "https" or not p.hostname: artwork = ""
+        if p.scheme != "https" or (p.hostname or "").lower() not in ARTWORK_ALLOWED_HOSTS: artwork = ""
     external_id = source_url.rstrip("/").rsplit("/", 1)[-1]
     fingerprint = hashlib.sha256(source_url.rstrip("/").lower().encode("utf-8")).hexdigest()
     return {"fingerprint": fingerprint, "external_id": external_id, "title": title,
