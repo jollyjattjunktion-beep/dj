@@ -630,6 +630,15 @@ add_filter('the_content', function ($content) {
           <a href="<?php echo esc_url($source); ?>" rel="nofollow noopener" target="_blank">View original source</a>
         </p>
       <?php endif; ?>
+      <nav class="jb-bottomnav" aria-label="JattBeat navigation">
+        <div class="jb-bottomnav-inner">
+          <a href="<?php echo esc_url(home_url('/')); ?>"><b>⌂</b>Home</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>♨</b>Trending</a>
+          <button type="button" data-jb-nav-search><b>⌕</b>Search</button>
+          <a href="<?php echo esc_url(home_url('/artists/')); ?>"><b>♫</b>Artists</a>
+          <a href="<?php echo esc_url(home_url('/songs/')); ?>"><b>▦</b>More</a>
+        </div>
+      </nav>
       <?php echo jattbeat_audio_dock(); ?>
     </section>
     <?php
