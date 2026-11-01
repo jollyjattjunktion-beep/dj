@@ -431,13 +431,38 @@ def wp_sync(song, render_song_id):
     }
 
     with httpx.Client(timeout=25, follow_redirects=False, auth=auth) as client:
-        response = client.post(endpoint, json=payload)
-        response.raise_for_status()
-        result = response.json()
+        response = client.post(
+            endpoint,
+            json=payload,
+            headers={"Accept": "application/json"},
+        )
+        content_type = response.headers.get("content-type", "")
+        body_excerpt = (response.text or "").strip().replace("\\r", " ").replace("\\n", " ")[:400]
+
+        if response.is_error or response.is_redirect:
+            raise RuntimeError(
+                "WordPress upsert HTTP "
+                f"{response.status_code}; content-type={content_type or 'missing'}; "
+                f"body={body_excerpt or '[empty response]'}"
+            )
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "WordPress upsert returned non-JSON "
+                f"(HTTP {response.status_code}); content-type={content_type or 'missing'}; "
+                f"body={body_excerpt or '[empty response]'}"
+            ) from exc
+
+        if not isinstance(result, dict):
+            raise RuntimeError("WordPress upsert returned JSON in an unexpected format")
         post_id = result.get("post_id")
         permalink = result.get("permalink")
         if not post_id or not permalink:
-            raise ValueError("WordPress upsert did not return a post ID and permalink")
+            raise ValueError(
+                "WordPress upsert response is missing post_id or permalink: "
+                + json.dumps(result, ensure_ascii=False)[:300]
+            )
         return int(post_id), str(permalink)
 
 
