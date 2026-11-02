@@ -279,7 +279,7 @@ KNOWN_MEDIA = {
 
 def parse_title_and_artist(raw_title, supplied_artist=""):
     title = clean(raw_title)
-    title = re.sub(r"\\s+MP3\\s+Song\\s+Download\\s*$", "", title, flags=re.I).strip()
+    title = re.sub(r"\s+MP3\s+Song\s+Download\s*$", "", title, flags=re.I).strip()
     supplied_artist = clean(supplied_artist)
 
     # Prefer a real artist credit supplied by the feed, not the feed/site name.
