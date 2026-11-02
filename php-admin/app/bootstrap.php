@@ -7,7 +7,34 @@ if(!is_dir(dirname(DB_PATH))) @mkdir(dirname(DB_PATH),0775,true);
 session_name(envv('SESSION_NAME','jattbeat_admin'));
 session_set_cookie_params(['httponly'=>true,'secure'=>(envv('APP_ENV')==='production'||(!empty($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off')),'samesite'=>'Lax']);
 if(session_status()!==PHP_SESSION_ACTIVE) session_start();
-function db(): PDO { static $p=null; if($p)return $p; $p=new PDO('sqlite:'.DB_PATH,null,null,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC]);$p->exec('PRAGMA foreign_keys=ON');return $p; }
+function db(): PDO {
+    static $p=null;
+    if($p) return $p;
+    $p=new PDO('sqlite:'.DB_PATH,null,null,[
+        PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC
+    ]);
+    $p->exec('PRAGMA foreign_keys=ON');
+
+    // Initialize missing tables safely. CREATE TABLE IF NOT EXISTS preserves
+    // all existing catalogue data and repairs fresh/partially initialized DBs.
+    $schemaFile=__DIR__.'/schema.sql';
+    if(!is_file($schemaFile)) throw new RuntimeException('Database schema file is missing: '.$schemaFile);
+    $schema=(string)file_get_contents($schemaFile);
+    if(trim($schema)==='') throw new RuntimeException('Database schema file is empty.');
+    $p->exec($schema);
+
+    // Add newer optional catalogue fields to older databases without deleting data.
+    $columns=$p->query('PRAGMA table_info(songs)')->fetchAll();
+    $names=array_column($columns,'name');
+    foreach(['source_url'=>'TEXT DEFAULT \'\'','duration'=>'TEXT DEFAULT \'\'','label'=>'TEXT DEFAULT \'\''] as $name=>$definition) {
+        if(!in_array($name,$names,true)) $p->exec('ALTER TABLE songs ADD COLUMN '.$name.' '.$definition);
+    }
+    $p->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_source_url ON songs(source_url) WHERE source_url IS NOT NULL AND source_url <> ''");
+    $p->exec("INSERT OR IGNORE INTO settings(key,value) VALUES('site_name','JattBeat')");
+    $p->exec("INSERT OR IGNORE INTO settings(key,value) VALUES('site_description','Discover Punjabi songs, singles and artist releases on JattBeat.')");
+    return $p;
+}
 function e(?string $v):string{return htmlspecialchars($v??'',ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
 function csrf():string{if(empty($_SESSION['csrf']))$_SESSION['csrf']=bin2hex(random_bytes(32));return $_SESSION['csrf'];}
 function check_csrf():void{if(!hash_equals($_SESSION['csrf']??'',$_POST['_csrf']??'')){http_response_code(419);exit('Invalid CSRF token');}}
