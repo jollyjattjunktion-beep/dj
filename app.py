@@ -1149,10 +1149,40 @@ def import_job_status(job_id: str, x_import_token: str = Header(default="")):
     return result
 
 
+async def sync_song_to_php_catalogue(client: httpx.AsyncClient, song: dict) -> dict:
+    """Publish catalogue metadata to the PHP site's own SQLite database."""
+    base = os.getenv("PHP_CATALOGUE_URL", "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("PHP_CATALOGUE_URL is not configured on the API service")
+    if not IMPORT_TOKEN:
+        raise RuntimeError("IMPORT_TOKEN is not configured on the API service")
+    response = await client.post(
+        base + "/catalogue-import.php",
+        json={
+            "source_url": song.get("source_url", ""),
+            "title": song.get("title", ""),
+            "artist": song.get("artist", ""),
+            "album": song.get("album", ""),
+            "label": song.get("label", ""),
+            "release_date": song.get("release_date", ""),
+            "duration": song.get("duration", ""),
+            "description": song.get("description", ""),
+            "artwork_url": song.get("artwork_url", ""),
+        },
+        headers={"X-Import-Token": IMPORT_TOKEN},
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("ok"):
+        raise RuntimeError(str(data.get("error") or "PHP catalogue rejected the song"))
+    return data
+
+
 async def run_import_job(job_id: str, normalized_pages: list[str]):
     summary = {
         "pages_checked": 0, "song_pages_found": 0, "created": 0,
-        "duplicates_skipped": 0, "wordpress_synced": 0, "errors": [],
+        "duplicates_skipped": 0, "php_catalogue_synced": 0, "errors": [],
     }
 
     def update_job(status=None, progress=None, error=None):
@@ -1226,21 +1256,14 @@ async def run_import_job(job_id: str, normalized_pages: list[str]):
                                     conn.commit()
                                     summary["created"] += 1
 
-                            if WP_BASE_URL and WP_USERNAME and WP_APP_PASSWORD:
-                                try:
-                                    wordpress_id, wordpress_url = wp_sync(song, render_song_id)
-                                    with closing(db()) as conn:
-                                        conn.execute(
-                                            "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
-                                            (wordpress_id, wordpress_url, render_song_id),
-                                        )
-                                        conn.commit()
-                                    summary["wordpress_synced"] += 1
-                                except Exception as wp_exc:
-                                    summary["errors"].append({
-                                        "url": song_url,
-                                        "wordpress_sync_error": str(wp_exc)[:180],
-                                    })
+                            try:
+                                await sync_song_to_php_catalogue(client, song)
+                                summary["php_catalogue_synced"] += 1
+                            except Exception as php_exc:
+                                summary["errors"].append({
+                                    "url": song_url,
+                                    "php_catalogue_sync_error": str(php_exc)[:220],
+                                })
                             await asyncio.sleep(0.25)
                         except Exception as exc:
                             summary["errors"].append({"url": song_url, "error": str(exc)[:180]})
