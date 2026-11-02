@@ -51,3 +51,25 @@ function importer_post(string $path,array $payload): array {
     }
     return $data;
 }
+
+function importer_get(string $path): array {
+    $base=rtrim(envv('IMPORT_API_URL','https://dj-laqb.onrender.com'),'/');
+    $token=envv('IMPORT_TOKEN','');
+    if($token==='') throw new RuntimeException('Importer is not configured. Add IMPORT_TOKEN to the PHP Render service environment.');
+    $url=$base.$path;
+    $context=stream_context_create(['http'=>[
+        'method'=>'GET',
+        'header'=>"Accept: application/json\\r\\nX-Import-Token: ".$token."\\r\\n",
+        'timeout'=>20,
+        'ignore_errors'=>true
+    ]]);
+    $body=@file_get_contents($url,false,$context);
+    $headers=$http_response_header??[];
+    if($body===false) throw new RuntimeException('Could not read importer job status.');
+    $status=0;
+    foreach($headers as $header) if(preg_match('/^HTTP\\/\\S+\\s+(\\d+)/',$header,$m)) $status=(int)$m[1];
+    $data=json_decode($body,true);
+    if(!is_array($data)) throw new RuntimeException('Importer status returned non-JSON (HTTP '.$status.').');
+    if($status<200||$status>=300) throw new RuntimeException((string)($data['detail']??'Importer status request failed (HTTP '.$status.').'));
+    return $data;
+}
