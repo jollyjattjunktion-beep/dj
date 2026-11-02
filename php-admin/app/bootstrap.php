@@ -59,7 +59,7 @@ function importer_get(string $path): array {
     $url=$base.$path;
     $context=stream_context_create(['http'=>[
         'method'=>'GET',
-        'header'=>"Accept: application/json\\r\\nX-Import-Token: ".$token."\\r\\n",
+        'header'=>"Accept: application/json\r\nX-Import-Token: ".$token."\r\n",
         'timeout'=>20,
         'ignore_errors'=>true
     ]]);
