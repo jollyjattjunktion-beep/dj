@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 import feedparser
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 APP_NAME = "Preet Music Portal API"
@@ -84,6 +84,17 @@ def init_db():
                 wordpress_id INTEGER,
                 wordpress_url TEXT,
                 created_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS import_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                progress TEXT DEFAULT '',
+                result TEXT DEFAULT '{}',
+                error TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )"""
         )
         conn.commit()
@@ -1083,7 +1094,11 @@ https://www.djjohal.com/category/single-track/3.html</textarea>
     return HTMLResponse(page)
 
 @app.post("/admin/import-pages")
-async def import_older_pages(request: Request, x_import_token: str = Header(default="")):
+async def import_older_pages(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_import_token: str = Header(default=""),
+):
     if not IMPORT_TOKEN or not hmac.compare_digest(x_import_token, IMPORT_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid import token")
     try:
@@ -1093,84 +1108,150 @@ async def import_older_pages(request: Request, x_import_token: str = Header(defa
     urls = payload.get("urls", []) if isinstance(payload, dict) else []
     if not isinstance(urls, list) or not urls or len(urls) > 20:
         raise HTTPException(status_code=400, detail="Provide between 1 and 20 category page URLs")
+
     normalized_pages = []
     for raw in urls:
         parsed = urlparse(clean(raw))
         if parsed.scheme != "https" or (parsed.hostname or "").lower() not in {"www.djjohal.com", "djjohal.com"} or not re.fullmatch(r"/category/single-track(?:/\d+)?\.html", parsed.path, re.I):
             raise HTTPException(status_code=400, detail=f"Not an approved Single Track category URL: {raw}")
         normalized_pages.append(raw)
-    summary = {"pages_checked": 0, "song_pages_found": 0, "created": 0, "duplicates_skipped": 0, "errors": []}
-    headers = {"User-Agent": USER_AGENT}
-    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
-        for page_url in normalized_pages:
-            try:
-                response = await client.get(page_url)
-                response.raise_for_status()
-                links = _extract_listing_links(response.text, str(response.url))
-                summary["pages_checked"] += 1
-                summary["song_pages_found"] += len(links)
-                for song_url in links[:60]:
-                    try:
-                        detail = await client.get(song_url)
-                        detail.raise_for_status()
-                        song = _extract_older_song(detail.text, song_url)
-                        with closing(db()) as conn:
-                            existing = conn.execute(
-                                "SELECT id FROM songs WHERE fingerprint=? OR source_url=?",
-                                (song["fingerprint"], song["source_url"]),
-                            ).fetchone()
-                            if existing:
-                                conn.execute(
-                                    """UPDATE songs SET
-                                       title=CASE WHEN ? != '' THEN ? ELSE title END,
-                                       artist=CASE WHEN (artist IS NULL OR artist='') AND ? != '' THEN ? ELSE artist END,
-                                       label=CASE WHEN (label IS NULL OR label='') AND ? != '' THEN ? ELSE label END,
-                                       release_date=CASE WHEN (release_date IS NULL OR release_date='') AND ? != '' THEN ? ELSE release_date END,
-                                       duration=CASE WHEN (duration IS NULL OR duration='') AND ? != '' THEN ? ELSE duration END,
-                                       audio_url=CASE WHEN (audio_url IS NULL OR audio_url='') AND ? != '' THEN ? ELSE audio_url END,
-                                       artwork_url=CASE WHEN (artwork_url IS NULL OR artwork_url='') AND ? != '' THEN ? ELSE artwork_url END
-                                       WHERE id=?""",
-                                    (song["title"], song["title"], song["artist"], song["artist"],
-                                     song["label"], song["label"], song["release_date"], song["release_date"],
-                                     song["duration"], song["duration"], song["audio_url"], song["audio_url"],
-                                     song["artwork_url"], song["artwork_url"], existing["id"]),
-                                )
-                                render_song_id = int(existing["id"])
-                                conn.commit()
-                                summary["duplicates_skipped"] += 1
-                            else:
-                                cursor = conn.execute("""INSERT INTO songs
-                                    (fingerprint,external_id,title,artist,album,label,release_date,
-                                     duration,description,source_url,audio_url,artwork_url,created_at)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                    (song["fingerprint"],song["external_id"],song["title"],song["artist"],
-                                     song["album"],song["label"],song["release_date"],song["duration"],
-                                     song["description"],song["source_url"],song["audio_url"],song["artwork_url"],
-                                     datetime.now(timezone.utc).isoformat()))
-                                render_song_id = int(cursor.lastrowid)
-                                conn.commit()
-                                summary["created"] += 1
 
-                        if WP_BASE_URL and WP_USERNAME and WP_APP_PASSWORD:
-                            try:
-                                wordpress_id, wordpress_url = wp_sync(song, render_song_id)
-                                with closing(db()) as conn:
+    job_id = secrets.token_urlsafe(18)
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(db()) as conn:
+        conn.execute(
+            """INSERT INTO import_jobs(job_id,status,progress,result,error,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (job_id, "queued", "Import queued", "{}", "", now, now),
+        )
+        conn.commit()
+
+    background_tasks.add_task(run_import_job, job_id, normalized_pages)
+    return {"job_id": job_id, "status": "queued", "message": "Import started in background."}
+
+
+@app.get("/admin/import-pages/{job_id}")
+def import_job_status(job_id: str, x_import_token: str = Header(default="")):
+    if not IMPORT_TOKEN or not hmac.compare_digest(x_import_token, IMPORT_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid import token")
+    with closing(db()) as conn:
+        row = conn.execute(
+            "SELECT job_id,status,progress,result,error,created_at,updated_at FROM import_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    result = dict(row)
+    try:
+        result["result"] = json.loads(result["result"] or "{}")
+    except ValueError:
+        result["result"] = {}
+    return result
+
+
+async def run_import_job(job_id: str, normalized_pages: list[str]):
+    summary = {
+        "pages_checked": 0, "song_pages_found": 0, "created": 0,
+        "duplicates_skipped": 0, "wordpress_synced": 0, "errors": [],
+    }
+
+    def update_job(status=None, progress=None, error=None):
+        with closing(db()) as conn:
+            conn.execute(
+                """UPDATE import_jobs SET status=COALESCE(?,status),
+                   progress=COALESCE(?,progress), error=COALESCE(?,error),
+                   result=?, updated_at=? WHERE job_id=?""",
+                (
+                    status, progress, error, json.dumps(summary, ensure_ascii=False),
+                    datetime.now(timezone.utc).isoformat(), job_id,
+                ),
+            )
+            conn.commit()
+
+    update_job("running", "Connecting to source pages")
+    headers = {"User-Agent": USER_AGENT}
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
+            for page_index, page_url in enumerate(normalized_pages, start=1):
+                try:
+                    update_job(progress=f"Reading category page {page_index}/{len(normalized_pages)}")
+                    response = await client.get(page_url)
+                    response.raise_for_status()
+                    links = _extract_listing_links(response.text, str(response.url))
+                    summary["pages_checked"] += 1
+                    summary["song_pages_found"] += len(links)
+
+                    for song_index, song_url in enumerate(links[:60], start=1):
+                        try:
+                            update_job(progress=f"Page {page_index}/{len(normalized_pages)} — song {song_index}/{min(len(links), 60)}")
+                            detail = await client.get(song_url)
+                            detail.raise_for_status()
+                            song = _extract_older_song(detail.text, song_url)
+                            with closing(db()) as conn:
+                                existing = conn.execute(
+                                    "SELECT id FROM songs WHERE fingerprint=? OR source_url=?",
+                                    (song["fingerprint"], song["source_url"]),
+                                ).fetchone()
+                                if existing:
                                     conn.execute(
-                                        "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
-                                        (wordpress_id, wordpress_url, render_song_id),
+                                        """UPDATE songs SET
+                                           title=CASE WHEN ? != '' THEN ? ELSE title END,
+                                           artist=CASE WHEN (artist IS NULL OR artist='') AND ? != '' THEN ? ELSE artist END,
+                                           label=CASE WHEN (label IS NULL OR label='') AND ? != '' THEN ? ELSE label END,
+                                           release_date=CASE WHEN (release_date IS NULL OR release_date='') AND ? != '' THEN ? ELSE release_date END,
+                                           duration=CASE WHEN (duration IS NULL OR duration='') AND ? != '' THEN ? ELSE duration END,
+                                           audio_url=CASE WHEN (audio_url IS NULL OR audio_url='') AND ? != '' THEN ? ELSE audio_url END,
+                                           artwork_url=CASE WHEN (artwork_url IS NULL OR artwork_url='') AND ? != '' THEN ? ELSE artwork_url END
+                                           WHERE id=?""",
+                                        (song["title"], song["title"], song["artist"], song["artist"],
+                                         song["label"], song["label"], song["release_date"], song["release_date"],
+                                         song["duration"], song["duration"], song["audio_url"], song["audio_url"],
+                                         song["artwork_url"], song["artwork_url"], existing["id"]),
                                     )
+                                    render_song_id = int(existing["id"])
                                     conn.commit()
-                                summary.setdefault("wordpress_synced", 0)
-                                summary["wordpress_synced"] += 1
-                            except Exception as wp_exc:
-                                summary["errors"].append({
-                                    "url": song_url,
-                                    "wordpress_sync_error": str(wp_exc)[:180],
-                                })
-                        await asyncio.sleep(0.6)
-                    except Exception as exc:
-                        summary["errors"].append({"url": song_url, "error": str(exc)[:180]})
-            except Exception as exc:
-                summary["errors"].append({"url": page_url, "error": str(exc)[:180]})
-    summary["errors"] = summary["errors"][:30]
-    return summary
+                                    summary["duplicates_skipped"] += 1
+                                else:
+                                    cursor = conn.execute(
+                                        """INSERT INTO songs
+                                        (fingerprint,external_id,title,artist,album,label,release_date,
+                                         duration,description,source_url,audio_url,artwork_url,created_at)
+                                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        (song["fingerprint"], song["external_id"], song["title"], song["artist"],
+                                         song["album"], song["label"], song["release_date"], song["duration"],
+                                         song["description"], song["source_url"], song["audio_url"], song["artwork_url"],
+                                         datetime.now(timezone.utc).isoformat()),
+                                    )
+                                    render_song_id = int(cursor.lastrowid)
+                                    conn.commit()
+                                    summary["created"] += 1
+
+                            if WP_BASE_URL and WP_USERNAME and WP_APP_PASSWORD:
+                                try:
+                                    wordpress_id, wordpress_url = wp_sync(song, render_song_id)
+                                    with closing(db()) as conn:
+                                        conn.execute(
+                                            "UPDATE songs SET wordpress_id=?, wordpress_url=? WHERE id=?",
+                                            (wordpress_id, wordpress_url, render_song_id),
+                                        )
+                                        conn.commit()
+                                    summary["wordpress_synced"] += 1
+                                except Exception as wp_exc:
+                                    summary["errors"].append({
+                                        "url": song_url,
+                                        "wordpress_sync_error": str(wp_exc)[:180],
+                                    })
+                            await asyncio.sleep(0.25)
+                        except Exception as exc:
+                            summary["errors"].append({"url": song_url, "error": str(exc)[:180]})
+                            update_job(progress=f"Continuing after an item error on page {page_index}")
+
+                except Exception as exc:
+                    summary["errors"].append({"url": page_url, "error": str(exc)[:180]})
+
+        summary["errors"] = summary["errors"][:30]
+        update_job("completed", "Import completed")
+    except Exception as exc:
+        update_job("failed", "Import stopped unexpectedly", str(exc)[:400])
+
+
