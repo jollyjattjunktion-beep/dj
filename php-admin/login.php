@@ -15,7 +15,31 @@ try {
 
 $err='';
 if($_SERVER['REQUEST_METHOD']==='POST'){
-    check_csrf();
+    // Validate same-origin form submission. Some mobile browsers/proxies omit
+    // the CSRF cookie on the first POST even though the login page just set it.
+    $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
+    $referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    $host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+    $sameOrigin = false;
+    foreach ([$origin, $referer] as $candidate) {
+        if ($candidate !== '') {
+            $parts = parse_url($candidate);
+            if (strtolower((string)($parts['host'] ?? '')) === $host
+                && in_array(strtolower((string)($parts['scheme'] ?? '')), ['https','http'], true)) {
+                $sameOrigin = true;
+                break;
+            }
+        }
+    }
+    $posted = (string)($_POST['_csrf'] ?? '');
+    $cookie = (string)($_COOKIE['jattbeat_csrf'] ?? '');
+    $sessionToken = (string)($_SESSION['csrf'] ?? '');
+    $tokenValid = ($cookie !== '' && hash_equals($cookie, $posted))
+        || ($sessionToken !== '' && hash_equals($sessionToken, $posted));
+    if (!$tokenValid && !$sameOrigin) {
+        http_response_code(419);
+        exit('Login security check failed. Please reopen the login page and try again.');
+    }
     $q=db()->prepare('SELECT * FROM admins WHERE username=?');
     $q->execute([trim($_POST['username']??'')]);
     $a=$q->fetch();
