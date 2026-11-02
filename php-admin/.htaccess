@@ -1,3 +1,4 @@
+DirectoryIndex index.html index.php
 Options -Indexes
 RewriteEngine On
 RewriteRule ^health$ health.php [L]
