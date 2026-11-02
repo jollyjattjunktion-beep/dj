@@ -5,7 +5,11 @@ define('APP_URL',rtrim(envv('APP_URL',''),'/'));
 define('DB_PATH',envv('DB_PATH',__DIR__.'/../storage/jattbeat.sqlite'));
 if(!is_dir(dirname(DB_PATH))) @mkdir(dirname(DB_PATH),0775,true);
 session_name(envv('SESSION_NAME','jattbeat_admin'));
-session_set_cookie_params(['httponly'=>true,'secure'=>(envv('APP_ENV')==='production'||(!empty($_SERVER['HTTPS'])&&$_SERVER['HTTPS']!=='off')),'samesite'=>'Lax']);
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https'
+    || str_starts_with(envv('RENDER_EXTERNAL_URL'), 'https://')
+    || envv('APP_ENV') === 'production';
+session_set_cookie_params(['lifetime'=>0,'path'=>'/','httponly'=>true,'secure'=>$isHttps,'samesite'=>'Lax']);
 if(session_status()!==PHP_SESSION_ACTIVE) session_start();
 function db(): PDO {
     static $p=null;
@@ -36,8 +40,34 @@ function db(): PDO {
     return $p;
 }
 function e(?string $v):string{return htmlspecialchars($v??'',ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
-function csrf():string{if(empty($_SESSION['csrf']))$_SESSION['csrf']=bin2hex(random_bytes(32));return $_SESSION['csrf'];}
-function check_csrf():void{if(!hash_equals($_SESSION['csrf']??'',$_POST['_csrf']??'')){http_response_code(419);exit('Invalid CSRF token');}}
+// Double-submit CSRF token: the signed-by-randomness cookie avoids stale
+// session-token mismatches behind reverse proxies while retaining CSRF protection.
+function csrf():string {
+    $cookie = (string)($_COOKIE['jattbeat_csrf'] ?? '');
+    if (!preg_match('/^[a-f0-9]{64}$/', $cookie)) {
+        $cookie = bin2hex(random_bytes(32));
+        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https'
+            || str_starts_with(envv('RENDER_EXTERNAL_URL'), 'https://')
+            || envv('APP_ENV') === 'production';
+        setcookie('jattbeat_csrf', $cookie, [
+            'expires'=>0,'path'=>'/','secure'=>$secure,'httponly'=>true,'samesite'=>'Strict'
+        ]);
+        $_COOKIE['jattbeat_csrf'] = $cookie;
+    }
+    $_SESSION['csrf'] = $cookie;
+    return $cookie;
+}
+function check_csrf():void {
+    $cookie = (string)($_COOKIE['jattbeat_csrf'] ?? '');
+    $posted = (string)($_POST['_csrf'] ?? '');
+    if (!preg_match('/^[a-f0-9]{64}$/', $cookie) || !hash_equals($cookie, $posted)) {
+        http_response_code(419);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit('Your security token expired. Refresh this page and submit the form again.');
+    }
+    $_SESSION['csrf'] = $cookie;
+}
 function admin_required():void{if(empty($_SESSION['admin_id'])){header('Location: /login.php');exit;}}
 function slugify(string $s):string{$s=iconv('UTF-8','ASCII//TRANSLIT//IGNORE',$s)?:$s;$s=strtolower(trim($s));$s=preg_replace('/[^a-z0-9]+/','-',$s);return trim($s,'-')?:'track';}
 function setting(string $k,string $d=''):string{$q=db()->prepare('SELECT value FROM settings WHERE key=?');$q->execute([$k]);$v=$q->fetchColumn();return $v===false?$d:(string)$v;}
