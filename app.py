@@ -1032,54 +1032,97 @@ def _extract_older_song(detail_html, source_url):
     parser.feed(detail_html)
     meta = parser.meta
     page_text = clean(" ".join(parser.text_parts))
-    source_description = clean(meta.get("description") or meta.get("og:description"))
-    description_match = re.search(
-        r"Download\s+(.+?)\s+MP3\s+song\s+by\s+(.+?)\s+on\s+DJJOhAL",
-        source_description or page_text, re.I,
-    )
-    if description_match:
-        title = clean(description_match.group(1))
-        artist = clean(description_match.group(2))
-    else:
-        raw_title = clean(meta.get("og:title") or meta.get("twitter:title") or " ".join(parser.title_text))
-        raw_title = re.sub(r"\s*[-|]\s*(DJJOhAL|DJJOhAL\.com).*$", "", raw_title, flags=re.I).strip()
+
+    # DJJOhAL exposes a short song-credit sentence in its description and
+    # the visible page text. Try every description field: the generic SEO
+    # description is not always the one containing the artist credit.
+    title = artist = ""
+    description_candidates = [
+        meta.get("og:description", ""),
+        meta.get("description", ""),
+        meta.get("twitter:description", ""),
+        page_text,
+    ]
+    for candidate in description_candidates:
+        candidate = clean(candidate)
+        if not candidate:
+            continue
+        match = re.search(
+            r"(?:Download\\s+)?(.+?)\\s+MP3\\s+song\\s+by\\s+(.+?)\\s+on\\s+DJJOhAL(?:\\.Com)?",
+            candidate, re.I,
+        )
+        if match:
+            title, artist = clean(match.group(1)), clean(match.group(2))
+            break
+
+    if not title:
+        raw_title = clean(
+            meta.get("og:title") or meta.get("twitter:title")
+            or " ".join(parser.title_text)
+        )
+        raw_title = re.sub(r"\\s*[-|]\\s*DJJOhAL(?:\\.Com)?\\s*$", "", raw_title, flags=re.I)
+        raw_title = re.sub(r"\\s+MP3\\s+Song\\s+Download\\s*$", "", raw_title, flags=re.I)
         title, artist = parse_title_and_artist(raw_title, "")
+
     artwork = urljoin(source_url, meta.get("og:image") or meta.get("twitter:image") or "")
     audio = ""
     for candidate in parser.media_links + parser.links:
         candidate = urljoin(source_url, candidate)
-        p = urlparse(candidate)
-        if p.scheme == "https" and (p.hostname or "").lower() in AUDIO_ALLOWED_HOSTS and p.path.lower().endswith(".mp3"):
+        parsed = urlparse(candidate)
+        if (parsed.scheme == "https"
+                and (parsed.hostname or "").lower() in AUDIO_ALLOWED_HOSTS
+                and parsed.path.lower().endswith(".mp3")):
             audio = candidate
             break
+
     duration = clean(meta.get("music:duration") or meta.get("duration"))
-    m = re.search(r"Duration\s*:?\s*(\d{1,2}:\d{2})", page_text, re.I)
-    if m: duration = m.group(1)
+    duration_match = re.search(r"Duration\\s*:?\\s*(\\d{1,2}:\\d{2})", page_text, re.I)
+    if duration_match:
+        duration = duration_match.group(1)
+
     label = clean(meta.get("music:label") or meta.get("label"))
-    m = re.search(r"Label\s+(.+?)\s+(?:Released|Duration|Song)", page_text, re.I)
-    if m: label = clean(m.group(1))
-    release_date = clean(meta.get("article:published_time") or meta.get("date") or meta.get("datepublished"))
-    m = re.search(r"Released\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", page_text, re.I)
-    if m:
+    label_match = re.search(
+        r"Released\\s+under\\s+(.+?)(?:[.;]|\\s+Release\\s+date|\\s+Duration|$)",
+        page_text, re.I,
+    )
+    if label_match:
+        label = clean(label_match.group(1))
+
+    release_date = clean(
+        meta.get("article:published_time") or meta.get("date")
+        or meta.get("datepublished")
+    )
+    date_match = re.search(
+        r"(?:Release\\s+date\\s*:?|Released\\s+)(\\d{1,2}\\s+[A-Za-z]{3,9}\\s+\\d{4})",
+        page_text, re.I,
+    )
+    if date_match:
         for fmt in ("%d %b %Y", "%d %B %Y"):
             try:
-                release_date = datetime.strptime(m.group(1), fmt).date().isoformat()
+                release_date = datetime.strptime(date_match.group(1), fmt).date().isoformat()
                 break
             except ValueError:
                 pass
     elif release_date:
-        m = re.search(r"\d{4}-\d{2}-\d{2}", release_date)
-        release_date = m.group(0) if m else release_date[:10]
-    if not title: raise ValueError("Song title could not be read from detail page")
+        iso_match = re.search(r"\\d{4}-\\d{2}-\\d{2}", release_date)
+        release_date = iso_match.group(0) if iso_match else release_date[:10]
+
+    if not title:
+        raise ValueError("Song title could not be read from detail page")
     if artwork:
-        p = urlparse(artwork)
-        if p.scheme != "https" or (p.hostname or "").lower() not in ARTWORK_ALLOWED_HOSTS: artwork = ""
+        parsed = urlparse(artwork)
+        if (parsed.scheme != "https"
+                or (parsed.hostname or "").lower() not in ARTWORK_ALLOWED_HOSTS):
+            artwork = ""
+
     external_id = source_url.rstrip("/").rsplit("/", 1)[-1]
     fingerprint = hashlib.sha256(source_url.rstrip("/").lower().encode("utf-8")).hexdigest()
-    return {"fingerprint": fingerprint, "external_id": external_id, "title": title,
-            "artist": artist, "album": "", "label": label, "release_date": release_date,
-            "duration": duration, "description": "", "source_url": source_url,
-            "audio_url": audio, "artwork_url": artwork}
+    return {
+        "fingerprint": fingerprint, "external_id": external_id, "title": title,
+        "artist": artist, "album": "", "label": label, "release_date": release_date,
+        "duration": duration, "description": "", "source_url": source_url,
+        "audio_url": audio, "artwork_url": artwork,
+    }
 
 @app.get("/admin", response_class=HTMLResponse)
 def older_pages_admin():
